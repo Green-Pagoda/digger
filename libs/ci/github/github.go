@@ -706,6 +706,81 @@ func (svc GithubService) IsMergeable(prNumber int) (bool, error) {
 	return pr.GetMergeable() && isMergeableState(pr.GetMergeableState()), nil
 }
 
+// isMergeableOrOnlyBlockedByDiggerApply checks whether a PR is mergeable, with
+// a special case: if the PR's mergeable state is "blocked" solely because the
+// "digger/apply" status check hasn't passed yet, it returns true. This breaks
+// the chicken-and-egg cycle where apply can't run because the PR isn't mergeable,
+// but the PR can't become mergeable until apply succeeds.
+// See: https://github.com/diggerhq/digger/issues/1180
+func (svc GithubService) isMergeableOrOnlyBlockedByDiggerApply(prNumber int) (bool, error) {
+	isMergeable, err := svc.IsMergeable(prNumber)
+	if err != nil {
+		return false, err
+	}
+	if isMergeable {
+		return true, nil
+	}
+
+	// Fetch the PR to check if the state is specifically "blocked"
+	pr, _, err := svc.Client.PullRequests.Get(context.Background(), svc.Owner, svc.RepoName, prNumber)
+	if err != nil {
+		return false, fmt.Errorf("error getting pull request: %v", err)
+	}
+	if strings.ToLower(pr.GetMergeableState()) != "blocked" {
+		return false, nil
+	}
+
+	headSha := pr.Head.GetSHA()
+
+	// Check commit statuses (older API) for non-digger/apply failures
+	combinedStatus, _, err := svc.Client.Repositories.GetCombinedStatus(context.Background(), svc.Owner, svc.RepoName, headSha, nil)
+	if err != nil {
+		return false, fmt.Errorf("error getting combined status: %v", err)
+	}
+	for _, status := range combinedStatus.Statuses {
+		if status.GetContext() == "digger/apply" {
+			continue
+		}
+		if status.GetState() != "success" {
+			slog.Debug("PR blocked by non-digger/apply commit status",
+				"context", status.GetContext(), "state", status.GetState())
+			return false, nil
+		}
+	}
+
+	// Check check runs (newer API) for non-digger/apply failures
+	checkRuns, err := svc.GetCheckRunsForCommit(headSha)
+	if err != nil {
+		return false, fmt.Errorf("error getting check runs: %v", err)
+	}
+	for _, run := range checkRuns {
+		if run.GetName() == "digger/apply" {
+			continue
+		}
+		conclusion := run.GetConclusion()
+		if conclusion != "success" && conclusion != "neutral" && conclusion != "skipped" {
+			slog.Debug("PR blocked by non-digger/apply check run",
+				"name", run.GetName(), "conclusion", conclusion, "status", run.GetStatus())
+			return false, nil
+		}
+	}
+
+	slog.Info("PR is blocked only by digger/apply — bypassing mergeability check",
+		"prNumber", prNumber)
+	return true, nil
+}
+
+// IsMergeableForApply checks PR mergeability with digger/apply bypass logic.
+// When the service is a GithubService, it uses the enhanced check that allows
+// apply to proceed if digger/apply is the sole blocking status check.
+// For other providers, it falls back to the standard IsMergeable check.
+func IsMergeableForApply(svc ci.PullRequestService, prNumber int) (bool, error) {
+	if ghSvc, ok := svc.(*GithubService); ok {
+		return ghSvc.isMergeableOrOnlyBlockedByDiggerApply(prNumber)
+	}
+	return svc.IsMergeable(prNumber)
+}
+
 func (svc GithubService) IsMerged(prNumber int) (bool, error) {
 	// we have to check if prNumber is an issue or not
 	issue, _, err := svc.Client.Issues.Get(context.Background(), svc.Owner, svc.RepoName, prNumber)
