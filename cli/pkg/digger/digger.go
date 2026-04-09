@@ -12,6 +12,7 @@ import (
 
 	"github.com/diggerhq/digger/libs/backendapi"
 	"github.com/diggerhq/digger/libs/ci"
+	ghci "github.com/diggerhq/digger/libs/ci/github"
 	comment_updater "github.com/diggerhq/digger/libs/comment_utils/summary"
 	"github.com/diggerhq/digger/libs/execution"
 	locking2 "github.com/diggerhq/digger/libs/locking"
@@ -381,7 +382,9 @@ func run(command string, job orchestrator.Job, policyChecker policy.Checker, org
 		}
 
 		// this might go into some sort of "appliability" plugin later
-		isMergeable, err := prService.IsMergeable(*job.PullRequestNumber)
+		// Use the GitHub-aware wrapper so that PRs blocked solely by the
+		// digger/apply status check are still considered mergeable. See #1180.
+		isMergeable, err := ghci.IsMergeableForApply(prService, *job.PullRequestNumber)
 		if err != nil {
 			msg := fmt.Sprintf("Failed to check if PR is mergeable. %v", err)
 			return nil, msg, fmt.Errorf("%s", msg)
