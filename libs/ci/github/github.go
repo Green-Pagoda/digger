@@ -774,11 +774,22 @@ func (svc GithubService) isMergeableOrOnlyBlockedByDiggerApply(prNumber int) (bo
 // When the service is a GithubService, it uses the enhanced check that allows
 // apply to proceed if digger/apply is the sole blocking status check.
 // For other providers, it falls back to the standard IsMergeable check.
+//
+// GithubService uses value receivers, so callers may box either a
+// GithubService value or a *GithubService pointer into ci.PullRequestService.
+// Both forms must be handled: the spec-driven CLI path (libs/spec/providers.go)
+// constructs and boxes a value via GithubServiceProviderBasic.NewService, while
+// the backend path (backend/utils/github.go) returns a pointer. Missing either
+// form silently drops the bypass on that code path — see issue #1180.
 func IsMergeableForApply(svc ci.PullRequestService, prNumber int) (bool, error) {
-	if ghSvc, ok := svc.(*GithubService); ok {
-		return ghSvc.isMergeableOrOnlyBlockedByDiggerApply(prNumber)
+	switch gh := svc.(type) {
+	case *GithubService:
+		return gh.isMergeableOrOnlyBlockedByDiggerApply(prNumber)
+	case GithubService:
+		return gh.isMergeableOrOnlyBlockedByDiggerApply(prNumber)
+	default:
+		return svc.IsMergeable(prNumber)
 	}
-	return svc.IsMergeable(prNumber)
 }
 
 func (svc GithubService) IsMerged(prNumber int) (bool, error) {
