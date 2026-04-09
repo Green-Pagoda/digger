@@ -3,6 +3,7 @@ package apply_requirements
 import (
 	"fmt"
 	"github.com/diggerhq/digger/libs/ci"
+	"github.com/diggerhq/digger/libs/ci/github"
 	"github.com/diggerhq/digger/libs/digger_config"
 	"github.com/diggerhq/digger/libs/scheduler"
 	"log/slog"
@@ -19,7 +20,9 @@ func IgnoreMergeabilityForProject(project digger_config.Project, jobs []schedule
 	return job.SkipMergeCheck
 }
 func CheckApplyRequirements(ghService ci.PullRequestService, impactedProjects []digger_config.Project, jobs []scheduler.Job, prNumber int, sourceBranch string, targetBranch string) error {
-	isMergeable, err := ghService.IsMergeable(prNumber)
+	// Use the GitHub-aware wrapper so that PRs blocked solely by the
+	// digger/apply status check are still considered mergeable. See #1180.
+	isMergeable, err := github.IsMergeableForApply(ghService, prNumber)
 	if err != nil {
 		slog.Error("Error checking if PR is mergeable", "prNumber", prNumber)
 		return fmt.Errorf("error checking if PR is mergeable")
