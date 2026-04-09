@@ -155,3 +155,41 @@ func TestIsMergeableForApply_FallsBackForNonGithub(t *testing.T) {
 	assert.NoError(t, err)
 	assert.True(t, result, "should fall back to IsMergeable for non-GitHub providers")
 }
+
+// TestIsMergeableForApply_BypassRunsForValueTypedGithubService guards
+// against an interface-dispatch regression.
+//
+// GithubService uses value receivers, so both GithubService and
+// *GithubService satisfy ci.PullRequestService. The spec-driven CLI apply
+// path obtains its service from GithubServiceProviderBasic.NewService,
+// which returns a GithubService by value; that value is then boxed into a
+// ci.PullRequestService interface variable (see libs/spec/providers.go).
+// If IsMergeableForApply only handles the *GithubService form, the
+// digger/apply bypass silently falls through to plain IsMergeable on the
+// CLI path — exactly the path issue #1180 is about — and the fix becomes
+// a no-op where it is needed most.
+//
+// This test reproduces the boxing with a blocked PR whose only failing
+// check is digger/apply. If the bypass runs, the result is true; if the
+// wrapper drops to plain IsMergeable, the result is false.
+func TestIsMergeableForApply_BypassRunsForValueTypedGithubService(t *testing.T) {
+	pr := makePR("blocked", false)
+	statuses := []*gh.RepoStatus{
+		{Context: gh.String("digger/apply"), State: gh.String("pending")},
+		{Context: gh.String("digger/plan"), State: gh.String("success")},
+	}
+	svc, server := newTestGithubService(t,
+		fakeGitHubAPI(t, pr, makeIssue(), statuses, nil))
+	defer server.Close()
+
+	// Box the GithubService VALUE (not &svc) into the interface — this
+	// mirrors libs/spec/providers.go, which returns the result of
+	// GithubServiceProviderBasic.NewService directly.
+	var iface ci.PullRequestService = svc
+
+	result, err := IsMergeableForApply(iface, 1)
+	assert.NoError(t, err)
+	assert.True(t, result,
+		"digger/apply bypass must run when GithubService is stored in "+
+			"ci.PullRequestService as a value, not only as a pointer")
+}
