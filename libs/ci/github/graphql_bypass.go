@@ -1,0 +1,204 @@
+package github
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+	"strings"
+)
+
+// bypassQuery is the GraphQL query used by IsMergeableForApply to fetch review
+// decision and status check rollup in a single call. This replaces two REST
+// calls (GetCombinedStatus + ListCheckRunsForRef).
+const bypassQuery = `
+query($owner: String!, $repo: String!, $number: Int!) {
+  repository(owner: $owner, name: $repo) {
+    pullRequest(number: $number) {
+      reviewDecision
+      commits(last: 1) {
+        nodes {
+          commit {
+            statusCheckRollup {
+              contexts(first: 100) {
+                totalCount
+                nodes {
+                  ... on StatusContext {
+                    context
+                    state
+                  }
+                  ... on CheckRun {
+                    name
+                    conclusion
+                    status
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}`
+
+// graphqlRequest is the JSON body sent to the GraphQL endpoint.
+type graphqlRequest struct {
+	Query     string         `json:"query"`
+	Variables map[string]any `json:"variables"`
+}
+
+// graphqlResponse mirrors the shape of the GraphQL response we expect.
+type graphqlResponse struct {
+	Data struct {
+		Repository struct {
+			PullRequest struct {
+				ReviewDecision string `json:"reviewDecision"`
+				Commits        struct {
+					Nodes []struct {
+						Commit struct {
+							StatusCheckRollup *struct {
+								Contexts struct {
+									TotalCount int               `json:"totalCount"`
+									Nodes      []json.RawMessage `json:"nodes"`
+								} `json:"contexts"`
+							} `json:"statusCheckRollup"`
+						} `json:"commit"`
+					} `json:"nodes"`
+				} `json:"commits"`
+			} `json:"pullRequest"`
+		} `json:"repository"`
+	} `json:"data"`
+	Errors []struct {
+		Message string `json:"message"`
+	} `json:"errors"`
+}
+
+// checkContext is a unified representation of either a StatusContext or a
+// CheckRun from the GraphQL statusCheckRollup union type.
+type checkContext struct {
+	// StatusContext fields
+	Context string `json:"context"`
+	State   string `json:"state"`
+	// CheckRun fields
+	Name       string `json:"name"`
+	Conclusion string `json:"conclusion"`
+	Status     string `json:"status"`
+}
+
+// IsStatusContext returns true if this context came from the older commit
+// statuses API (has a non-empty Context field).
+func (c checkContext) IsStatusContext() bool {
+	return c.Context != ""
+}
+
+// DisplayName returns the identifying name regardless of type.
+func (c checkContext) DisplayName() string {
+	if c.Context != "" {
+		return c.Context
+	}
+	return c.Name
+}
+
+// IsPassing returns true if the check/status has a successful outcome.
+func (c checkContext) IsPassing() bool {
+	if c.IsStatusContext() {
+		return c.State == "SUCCESS"
+	}
+	return c.Conclusion == "SUCCESS" || c.Conclusion == "NEUTRAL" || c.Conclusion == "SKIPPED"
+}
+
+// bypassCheckResult holds the parsed result of the GraphQL bypass query.
+type bypassCheckResult struct {
+	ReviewDecision string
+	Contexts       []checkContext
+	TotalCount     int
+}
+
+// graphqlBaseURL derives the GraphQL endpoint from the REST client's base URL.
+// For github.com it returns https://api.github.com/graphql. For GHE or
+// httptest servers it appends /graphql to the existing base.
+func graphqlBaseURL(restBaseURL string) string {
+	restBaseURL = strings.TrimSuffix(restBaseURL, "/")
+	if strings.HasSuffix(restBaseURL, "api.github.com") {
+		return "https://api.github.com/graphql"
+	}
+	// GHE: https://hostname/api/v3 → https://hostname/api/graphql
+	if strings.HasSuffix(restBaseURL, "/api/v3") {
+		return strings.TrimSuffix(restBaseURL, "/v3") + "/graphql"
+	}
+	// httptest or other: just append /graphql
+	return restBaseURL + "/graphql"
+}
+
+// queryBypassGraphQL executes the bypass GraphQL query and returns the parsed
+// result. Returns an error if the request fails or the response is malformed.
+func queryBypassGraphQL(ctx context.Context, restBaseURL, token, owner, repo string, prNumber int) (*bypassCheckResult, error) {
+	url := graphqlBaseURL(restBaseURL)
+
+	reqBody := graphqlRequest{
+		Query: bypassQuery,
+		Variables: map[string]any{
+			"owner":  owner,
+			"repo":   repo,
+			"number": prNumber,
+		},
+	}
+	body, err := json.Marshal(reqBody)
+	if err != nil {
+		return nil, fmt.Errorf("error marshaling GraphQL request: %v", err)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(body))
+	if err != nil {
+		return nil, fmt.Errorf("error creating GraphQL request: %v", err)
+	}
+	req.Header.Set("Authorization", "bearer "+token)
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("error executing GraphQL request: %v", err)
+	}
+	defer resp.Body.Close()
+
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("error reading GraphQL response: %v", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("GraphQL request failed with status %d: %s", resp.StatusCode, string(respBody))
+	}
+
+	var gqlResp graphqlResponse
+	if err := json.Unmarshal(respBody, &gqlResp); err != nil {
+		return nil, fmt.Errorf("error unmarshaling GraphQL response: %v", err)
+	}
+	if len(gqlResp.Errors) > 0 {
+		return nil, fmt.Errorf("GraphQL error: %s", gqlResp.Errors[0].Message)
+	}
+
+	result := &bypassCheckResult{
+		ReviewDecision: gqlResp.Data.Repository.PullRequest.ReviewDecision,
+	}
+
+	commits := gqlResp.Data.Repository.PullRequest.Commits.Nodes
+	if len(commits) == 0 || commits[0].Commit.StatusCheckRollup == nil {
+		return result, nil
+	}
+
+	rollup := commits[0].Commit.StatusCheckRollup.Contexts
+	result.TotalCount = rollup.TotalCount
+
+	for _, raw := range rollup.Nodes {
+		var cc checkContext
+		if err := json.Unmarshal(raw, &cc); err != nil {
+			return nil, fmt.Errorf("error unmarshaling check context: %v", err)
+		}
+		result.Contexts = append(result.Contexts, cc)
+	}
+
+	return result, nil
+}
