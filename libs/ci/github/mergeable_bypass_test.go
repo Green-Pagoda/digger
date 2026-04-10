@@ -149,6 +149,68 @@ func TestBypass_DirtyState_ReturnsFalse(t *testing.T) {
 	assert.False(t, result, "dirty state (merge conflicts) should not be bypassed")
 }
 
+// TestBypass_BlockedByNonCheckReason_NoDiggerApply_ReturnsFalse covers the
+// case where a PR is "blocked" due to a non-status-check reason (e.g. missing
+// required reviews, unresolved conversations, unsigned commits) and no
+// digger/apply check is present at all. All other checks are passing.
+// The bypass must NOT fire — digger/apply isn't causing the block.
+func TestBypass_BlockedByNonCheckReason_NoDiggerApply_ReturnsFalse(t *testing.T) {
+	pr := makePR("blocked", false)
+	statuses := []*gh.RepoStatus{
+		{Context: gh.String("ci/build"), State: gh.String("success")},
+		{Context: gh.String("ci/lint"), State: gh.String("success")},
+	}
+	checkRuns := []*gh.CheckRun{
+		{Name: gh.String("ci/test"), Status: gh.String("completed"), Conclusion: gh.String("success")},
+	}
+	svc, server := newTestGithubService(t,
+		fakeGitHubAPI(t, pr, makeIssue(), statuses, checkRuns))
+	defer server.Close()
+
+	result, err := svc.isMergeableOrOnlyBlockedByDiggerApply(1)
+	assert.NoError(t, err)
+	assert.False(t, result,
+		"should not bypass when blocked for non-check reasons (e.g. missing reviews) "+
+			"and digger/apply is not even present")
+}
+
+// TestBypass_BlockedByNonCheckReason_DiggerApplyAlreadyPassed_ReturnsFalse
+// covers the case where digger/apply has already succeeded but the PR is still
+// "blocked" — meaning something else (reviews, signatures, etc.) is blocking.
+func TestBypass_BlockedByNonCheckReason_DiggerApplyAlreadyPassed_ReturnsFalse(t *testing.T) {
+	pr := makePR("blocked", false)
+	statuses := []*gh.RepoStatus{
+		{Context: gh.String("digger/apply"), State: gh.String("success")},
+		{Context: gh.String("digger/plan"), State: gh.String("success")},
+	}
+	svc, server := newTestGithubService(t,
+		fakeGitHubAPI(t, pr, makeIssue(), statuses, nil))
+	defer server.Close()
+
+	result, err := svc.isMergeableOrOnlyBlockedByDiggerApply(1)
+	assert.NoError(t, err)
+	assert.False(t, result,
+		"should not bypass when digger/apply already passed — the block "+
+			"must be caused by something else (reviews, signatures, etc.)")
+}
+
+// TestBypass_BlockedWithNoChecksAtAll_ReturnsFalse covers the case where a PR
+// is "blocked" but there are zero status checks and zero check runs. The block
+// must be entirely due to non-check branch protection (reviews, signatures,
+// linear history, etc.).
+func TestBypass_BlockedWithNoChecksAtAll_ReturnsFalse(t *testing.T) {
+	pr := makePR("blocked", false)
+	svc, server := newTestGithubService(t,
+		fakeGitHubAPI(t, pr, makeIssue(), nil, nil))
+	defer server.Close()
+
+	result, err := svc.isMergeableOrOnlyBlockedByDiggerApply(1)
+	assert.NoError(t, err)
+	assert.False(t, result,
+		"should not bypass when there are no checks at all — the block "+
+			"is caused by non-check requirements")
+}
+
 func TestIsMergeableForApply_FallsBackForNonGithub(t *testing.T) {
 	mock := MockCiService{CommentsPerPr: map[int][]*ci.Comment{}}
 	result, err := IsMergeableForApply(&mock, 1)
