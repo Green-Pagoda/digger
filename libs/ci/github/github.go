@@ -731,6 +731,7 @@ func (svc GithubService) isMergeableOrOnlyBlockedByDiggerApply(prNumber int) (bo
 	}
 
 	headSha := pr.Head.GetSHA()
+	foundBlockingDiggerApply := false
 
 	// Check commit statuses (older API) for non-digger/apply failures
 	combinedStatus, _, err := svc.Client.Repositories.GetCombinedStatus(context.Background(), svc.Owner, svc.RepoName, headSha, nil)
@@ -739,6 +740,9 @@ func (svc GithubService) isMergeableOrOnlyBlockedByDiggerApply(prNumber int) (bo
 	}
 	for _, status := range combinedStatus.Statuses {
 		if status.GetContext() == "digger/apply" {
+			if status.GetState() != "success" {
+				foundBlockingDiggerApply = true
+			}
 			continue
 		}
 		if status.GetState() != "success" {
@@ -755,6 +759,10 @@ func (svc GithubService) isMergeableOrOnlyBlockedByDiggerApply(prNumber int) (bo
 	}
 	for _, run := range checkRuns {
 		if run.GetName() == "digger/apply" {
+			conclusion := run.GetConclusion()
+			if conclusion != "success" && conclusion != "neutral" && conclusion != "skipped" {
+				foundBlockingDiggerApply = true
+			}
 			continue
 		}
 		conclusion := run.GetConclusion()
@@ -763,6 +771,13 @@ func (svc GithubService) isMergeableOrOnlyBlockedByDiggerApply(prNumber int) (bo
 				"name", run.GetName(), "conclusion", conclusion, "status", run.GetStatus())
 			return false, nil
 		}
+	}
+
+	if !foundBlockingDiggerApply {
+		slog.Debug("PR is blocked but digger/apply is not pending/failing — "+
+			"block is caused by non-status-check requirements (reviews, signatures, etc.)",
+			"prNumber", prNumber)
+		return false, nil
 	}
 
 	slog.Info("PR is blocked only by digger/apply — bypassing mergeability check",
