@@ -713,19 +713,28 @@ func (svc GithubService) IsMergeable(prNumber int) (bool, error) {
 // but the PR can't become mergeable until apply succeeds.
 // See: https://github.com/diggerhq/digger/issues/1180
 func (svc GithubService) isMergeableOrOnlyBlockedByDiggerApply(prNumber int) (bool, error) {
-	isMergeable, err := svc.IsMergeable(prNumber)
+	isPullRequest, err := svc.IsPullRequest(prNumber)
 	if err != nil {
-		return false, err
+		return false, fmt.Errorf("could not get pull request type: %v", err)
 	}
-	if isMergeable {
-		return true, nil
+	if !isPullRequest {
+		return true, nil // issues are always "mergeable" (closable)
 	}
 
-	// Fetch the PR to check if the state is specifically "blocked"
+	// Fetch the PR once and use that single snapshot for all decisions.
 	pr, _, err := svc.Client.PullRequests.Get(context.Background(), svc.Owner, svc.RepoName, prNumber)
 	if err != nil {
 		return false, fmt.Errorf("error getting pull request: %v", err)
 	}
+
+	// Fast path: PR is already mergeable by normal rules.
+	if pr.GetMergeable() && isMergeableState(pr.GetMergeableState()) {
+		return true, nil
+	}
+
+	// Only attempt the bypass when the state is specifically "blocked"
+	// (branch protection checks failing). Other states like "dirty" (merge
+	// conflicts) or "behind" cannot be resolved by running apply.
 	if strings.ToLower(pr.GetMergeableState()) != "blocked" {
 		return false, nil
 	}
@@ -733,10 +742,16 @@ func (svc GithubService) isMergeableOrOnlyBlockedByDiggerApply(prNumber int) (bo
 	headSha := pr.Head.GetSHA()
 	foundBlockingDiggerApply := false
 
-	// Check commit statuses (older API) for non-digger/apply failures
+	// Check commit statuses (older API) — record digger/apply as blocking,
+	// reject if any other status is failing.
 	combinedStatus, _, err := svc.Client.Repositories.GetCombinedStatus(context.Background(), svc.Owner, svc.RepoName, headSha, nil)
 	if err != nil {
 		return false, fmt.Errorf("error getting combined status: %v", err)
+	}
+	if combinedStatus.GetTotalCount() > len(combinedStatus.Statuses) {
+		slog.Warn("commit status results truncated — refusing to bypass",
+			"total", combinedStatus.GetTotalCount(), "fetched", len(combinedStatus.Statuses))
+		return false, nil
 	}
 	for _, status := range combinedStatus.Statuses {
 		if status.GetContext() == "digger/apply" {
@@ -752,12 +767,20 @@ func (svc GithubService) isMergeableOrOnlyBlockedByDiggerApply(prNumber int) (bo
 		}
 	}
 
-	// Check check runs (newer API) for non-digger/apply failures
-	checkRuns, err := svc.GetCheckRunsForCommit(headSha)
+	// Check check runs (newer API) — record digger/apply as blocking,
+	// reject if any other check run is failing.
+	checkRunResults, _, err := svc.Client.Checks.ListCheckRunsForRef(
+		context.Background(), svc.Owner, svc.RepoName, headSha,
+		&github.ListCheckRunsOptions{ListOptions: github.ListOptions{PerPage: 100}})
 	if err != nil {
 		return false, fmt.Errorf("error getting check runs: %v", err)
 	}
-	for _, run := range checkRuns {
+	if checkRunResults.GetTotal() > len(checkRunResults.CheckRuns) {
+		slog.Warn("check run results truncated — refusing to bypass",
+			"total", checkRunResults.GetTotal(), "fetched", len(checkRunResults.CheckRuns))
+		return false, nil
+	}
+	for _, run := range checkRunResults.CheckRuns {
 		if run.GetName() == "digger/apply" {
 			conclusion := run.GetConclusion()
 			if conclusion != "success" && conclusion != "neutral" && conclusion != "skipped" {
@@ -803,6 +826,8 @@ func IsMergeableForApply(svc ci.PullRequestService, prNumber int) (bool, error) 
 	case GithubService:
 		return gh.isMergeableOrOnlyBlockedByDiggerApply(prNumber)
 	default:
+		slog.Debug("IsMergeableForApply: non-GithubService provider, using standard IsMergeable",
+			"providerType", fmt.Sprintf("%T", svc), "prNumber", prNumber)
 		return svc.IsMergeable(prNumber)
 	}
 }

@@ -43,7 +43,10 @@ func fakeGitHubAPI(t *testing.T, pr *gh.PullRequest, issue *gh.Issue, statuses [
 
 		// GetCombinedStatus
 		case r.Method == "GET" && r.URL.Path == "/repos/testowner/testrepo/commits/abc123/status":
-			combined := &gh.CombinedStatus{Statuses: statuses}
+			combined := &gh.CombinedStatus{
+				TotalCount: gh.Int(len(statuses)),
+				Statuses:   statuses,
+			}
 			json.NewEncoder(w).Encode(combined)
 
 		// ListCheckRunsForRef
@@ -209,6 +212,83 @@ func TestBypass_BlockedWithNoChecksAtAll_ReturnsFalse(t *testing.T) {
 	assert.False(t, result,
 		"should not bypass when there are no checks at all — the block "+
 			"is caused by non-check requirements")
+}
+
+// fakeGitHubAPIWithTotals is like fakeGitHubAPI but allows overriding the
+// reported total counts for statuses and check runs, simulating truncated
+// (paginated) responses when total > len(items).
+func fakeGitHubAPIWithTotals(t *testing.T, pr *gh.PullRequest, issue *gh.Issue, statuses []*gh.RepoStatus, statusTotal int, checkRuns []*gh.CheckRun, checkRunTotal int) http.Handler {
+	t.Helper()
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+
+		switch {
+		case r.Method == "GET" && r.URL.Path == "/repos/testowner/testrepo/issues/1":
+			json.NewEncoder(w).Encode(issue)
+
+		case r.Method == "GET" && r.URL.Path == "/repos/testowner/testrepo/pulls/1":
+			json.NewEncoder(w).Encode(pr)
+
+		case r.Method == "GET" && r.URL.Path == "/repos/testowner/testrepo/commits/abc123/status":
+			combined := &gh.CombinedStatus{
+				TotalCount: gh.Int(statusTotal),
+				Statuses:   statuses,
+			}
+			json.NewEncoder(w).Encode(combined)
+
+		case r.Method == "GET" && r.URL.Path == "/repos/testowner/testrepo/commits/abc123/check-runs":
+			result := &gh.ListCheckRunsResults{
+				Total:     gh.Int(checkRunTotal),
+				CheckRuns: checkRuns,
+			}
+			json.NewEncoder(w).Encode(result)
+
+		default:
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+		}
+	})
+}
+
+// TestBypass_TruncatedStatuses_ReturnsFalse verifies that the bypass refuses
+// to fire when the combined status response is truncated (more statuses exist
+// than were returned). This prevents silently missing a failing non-digger
+// check that fell beyond the first page.
+func TestBypass_TruncatedStatuses_ReturnsFalse(t *testing.T) {
+	pr := makePR("blocked", false)
+	statuses := []*gh.RepoStatus{
+		{Context: gh.String("digger/apply"), State: gh.String("pending")},
+	}
+	// Report total=5 but only return 1 status — simulates pagination truncation
+	svc, server := newTestGithubService(t,
+		fakeGitHubAPIWithTotals(t, pr, makeIssue(), statuses, 5, nil, 0))
+	defer server.Close()
+
+	result, err := svc.isMergeableOrOnlyBlockedByDiggerApply(1)
+	assert.NoError(t, err)
+	assert.False(t, result,
+		"should refuse to bypass when commit status results are truncated")
+}
+
+// TestBypass_TruncatedCheckRuns_ReturnsFalse verifies that the bypass refuses
+// to fire when the check runs response is truncated.
+func TestBypass_TruncatedCheckRuns_ReturnsFalse(t *testing.T) {
+	pr := makePR("blocked", false)
+	statuses := []*gh.RepoStatus{
+		{Context: gh.String("digger/apply"), State: gh.String("pending")},
+	}
+	checkRuns := []*gh.CheckRun{
+		{Name: gh.String("ci/build"), Status: gh.String("completed"), Conclusion: gh.String("success")},
+	}
+	// Report total=150 but only return 1 check run
+	svc, server := newTestGithubService(t,
+		fakeGitHubAPIWithTotals(t, pr, makeIssue(), statuses, 1, checkRuns, 150))
+	defer server.Close()
+
+	result, err := svc.isMergeableOrOnlyBlockedByDiggerApply(1)
+	assert.NoError(t, err)
+	assert.False(t, result,
+		"should refuse to bypass when check run results are truncated")
 }
 
 func TestIsMergeableForApply_FallsBackForNonGithub(t *testing.T) {
