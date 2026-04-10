@@ -28,6 +28,23 @@ type PullRequestService interface {
 	SetOutput(prNumber int, key string, value string) error
 }
 
+// ApplyMergeChecker is an optional capability for providers that support
+// enhanced mergeability checks during apply. GitHub implements this to break
+// the chicken-and-egg cycle where digger/apply blocks itself as a required
+// status check. See: https://github.com/diggerhq/digger/issues/1180
+type ApplyMergeChecker interface {
+	IsMergeableForApply(prNumber int) (bool, error)
+}
+
+// IsMergeableForApply checks mergeability using provider-specific bypass
+// logic if available, falling back to standard IsMergeable otherwise.
+func IsMergeableForApply(svc PullRequestService, prNumber int) (bool, error) {
+	if checker, ok := svc.(ApplyMergeChecker); ok {
+		return checker.IsMergeableForApply(prNumber)
+	}
+	return svc.IsMergeable(prNumber)
+}
+
 type OrgService interface {
 	GetUserTeams(organisation string, user string) ([]string, error)
 }

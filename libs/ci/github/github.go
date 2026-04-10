@@ -706,13 +706,15 @@ func (svc GithubService) IsMergeable(prNumber int) (bool, error) {
 	return pr.GetMergeable() && isMergeableState(pr.GetMergeableState()), nil
 }
 
-// isMergeableOrOnlyBlockedByDiggerApply checks whether a PR is mergeable, with
-// a special case: if the PR's mergeable state is "blocked" solely because the
-// "digger/apply" status check hasn't passed yet, it returns true. This breaks
-// the chicken-and-egg cycle where apply can't run because the PR isn't mergeable,
+// IsMergeableForApply checks whether a PR is mergeable, with a special case:
+// if the PR's mergeable state is "blocked" solely because the "digger/apply"
+// status check hasn't passed yet, it returns true. This breaks the
+// chicken-and-egg cycle where apply can't run because the PR isn't mergeable,
 // but the PR can't become mergeable until apply succeeds.
+//
+// Satisfies ci.ApplyMergeChecker.
 // See: https://github.com/diggerhq/digger/issues/1180
-func (svc GithubService) isMergeableOrOnlyBlockedByDiggerApply(prNumber int) (bool, error) {
+func (svc GithubService) IsMergeableForApply(prNumber int) (bool, error) {
 	isPullRequest, err := svc.IsPullRequest(prNumber)
 	if err != nil {
 		return false, fmt.Errorf("could not get pull request type: %v", err)
@@ -808,29 +810,6 @@ func (svc GithubService) isMergeableOrOnlyBlockedByDiggerApply(prNumber int) (bo
 	return true, nil
 }
 
-// IsMergeableForApply checks PR mergeability with digger/apply bypass logic.
-// When the service is a GithubService, it uses the enhanced check that allows
-// apply to proceed if digger/apply is the sole blocking status check.
-// For other providers, it falls back to the standard IsMergeable check.
-//
-// GithubService uses value receivers, so callers may box either a
-// GithubService value or a *GithubService pointer into ci.PullRequestService.
-// Both forms must be handled: the spec-driven CLI path (libs/spec/providers.go)
-// constructs and boxes a value via GithubServiceProviderBasic.NewService, while
-// the backend path (backend/utils/github.go) returns a pointer. Missing either
-// form silently drops the bypass on that code path — see issue #1180.
-func IsMergeableForApply(svc ci.PullRequestService, prNumber int) (bool, error) {
-	switch gh := svc.(type) {
-	case *GithubService:
-		return gh.isMergeableOrOnlyBlockedByDiggerApply(prNumber)
-	case GithubService:
-		return gh.isMergeableOrOnlyBlockedByDiggerApply(prNumber)
-	default:
-		slog.Debug("IsMergeableForApply: non-GithubService provider, using standard IsMergeable",
-			"providerType", fmt.Sprintf("%T", svc), "prNumber", prNumber)
-		return svc.IsMergeable(prNumber)
-	}
-}
 
 func (svc GithubService) IsMerged(prNumber int) (bool, error) {
 	// we have to check if prNumber is an issue or not
