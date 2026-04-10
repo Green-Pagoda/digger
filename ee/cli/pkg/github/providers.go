@@ -33,5 +33,6 @@ func (_ GithubServiceProviderAdvanced) NewService(ghToken string, repoName strin
 		Client:   client,
 		RepoName: repoName,
 		Owner:    owner,
+		Token:    ghToken,
 	}, nil
 }

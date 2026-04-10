@@ -34,6 +34,7 @@ func (_ GithubServiceProviderBasic) NewService(ghToken string, repoName string, 
 		Client:   client,
 		RepoName: repoName,
 		Owner:    owner,
+		Token:    ghToken,
 	}, nil
 }
 
@@ -41,6 +42,7 @@ type GithubService struct {
 	Client   *github.Client
 	RepoName string
 	Owner    string
+	Token    string // needed for GraphQL bypass query; empty = fall back to REST
 }
 
 func (svc GithubService) GetUserTeams(organisation string, user string) ([]string, error) {

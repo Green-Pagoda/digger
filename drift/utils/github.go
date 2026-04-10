@@ -41,10 +41,15 @@ func GetGithubService(gh utils.GithubClientProvider, installationId int64, repoF
 		return nil, nil, fmt.Errorf("Error creating github app client: %v", err)
 	}
 
+	var tokenStr string
+	if token != nil {
+		tokenStr = *token
+	}
 	ghService := github2.GithubService{
 		Client:   ghClient,
 		RepoName: repoName,
 		Owner:    repoOwner,
+		Token:    tokenStr,
 	}
 
 	return &ghService, token, nil
