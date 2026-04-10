@@ -37,7 +37,7 @@ func fakeGitHubAPI(t *testing.T, pr *gh.PullRequest, issue *gh.Issue, statuses [
 		case r.Method == "GET" && r.URL.Path == "/repos/testowner/testrepo/issues/1":
 			json.NewEncoder(w).Encode(issue)
 
-		// IsMergeable and isMergeableOrOnlyBlockedByDiggerApply call PullRequests.Get
+		// IsMergeable and IsMergeableForApply call PullRequests.Get
 		case r.Method == "GET" && r.URL.Path == "/repos/testowner/testrepo/pulls/1":
 			json.NewEncoder(w).Encode(pr)
 
@@ -86,7 +86,7 @@ func TestBypass_CleanPR_ReturnsTrue(t *testing.T) {
 		fakeGitHubAPI(t, pr, makeIssue(), nil, nil))
 	defer server.Close()
 
-	result, err := svc.isMergeableOrOnlyBlockedByDiggerApply(1)
+	result, err := svc.IsMergeableForApply(1)
 	assert.NoError(t, err)
 	assert.True(t, result, "clean PR should be mergeable")
 }
@@ -104,7 +104,7 @@ func TestBypass_BlockedOnlyByDiggerApply_ReturnsTrue(t *testing.T) {
 		fakeGitHubAPI(t, pr, makeIssue(), statuses, checkRuns))
 	defer server.Close()
 
-	result, err := svc.isMergeableOrOnlyBlockedByDiggerApply(1)
+	result, err := svc.IsMergeableForApply(1)
 	assert.NoError(t, err)
 	assert.True(t, result, "should bypass when digger/apply is the only blocker")
 }
@@ -119,7 +119,7 @@ func TestBypass_BlockedByOtherStatus_ReturnsFalse(t *testing.T) {
 		fakeGitHubAPI(t, pr, makeIssue(), statuses, nil))
 	defer server.Close()
 
-	result, err := svc.isMergeableOrOnlyBlockedByDiggerApply(1)
+	result, err := svc.IsMergeableForApply(1)
 	assert.NoError(t, err)
 	assert.False(t, result, "should not bypass when another status is failing")
 }
@@ -136,7 +136,7 @@ func TestBypass_BlockedByOtherCheckRun_ReturnsFalse(t *testing.T) {
 		fakeGitHubAPI(t, pr, makeIssue(), statuses, checkRuns))
 	defer server.Close()
 
-	result, err := svc.isMergeableOrOnlyBlockedByDiggerApply(1)
+	result, err := svc.IsMergeableForApply(1)
 	assert.NoError(t, err)
 	assert.False(t, result, "should not bypass when a check run is failing")
 }
@@ -147,7 +147,7 @@ func TestBypass_DirtyState_ReturnsFalse(t *testing.T) {
 		fakeGitHubAPI(t, pr, makeIssue(), nil, nil))
 	defer server.Close()
 
-	result, err := svc.isMergeableOrOnlyBlockedByDiggerApply(1)
+	result, err := svc.IsMergeableForApply(1)
 	assert.NoError(t, err)
 	assert.False(t, result, "dirty state (merge conflicts) should not be bypassed")
 }
@@ -170,7 +170,7 @@ func TestBypass_BlockedByNonCheckReason_NoDiggerApply_ReturnsFalse(t *testing.T)
 		fakeGitHubAPI(t, pr, makeIssue(), statuses, checkRuns))
 	defer server.Close()
 
-	result, err := svc.isMergeableOrOnlyBlockedByDiggerApply(1)
+	result, err := svc.IsMergeableForApply(1)
 	assert.NoError(t, err)
 	assert.False(t, result,
 		"should not bypass when blocked for non-check reasons (e.g. missing reviews) "+
@@ -190,7 +190,7 @@ func TestBypass_BlockedByNonCheckReason_DiggerApplyAlreadyPassed_ReturnsFalse(t 
 		fakeGitHubAPI(t, pr, makeIssue(), statuses, nil))
 	defer server.Close()
 
-	result, err := svc.isMergeableOrOnlyBlockedByDiggerApply(1)
+	result, err := svc.IsMergeableForApply(1)
 	assert.NoError(t, err)
 	assert.False(t, result,
 		"should not bypass when digger/apply already passed — the block "+
@@ -207,7 +207,7 @@ func TestBypass_BlockedWithNoChecksAtAll_ReturnsFalse(t *testing.T) {
 		fakeGitHubAPI(t, pr, makeIssue(), nil, nil))
 	defer server.Close()
 
-	result, err := svc.isMergeableOrOnlyBlockedByDiggerApply(1)
+	result, err := svc.IsMergeableForApply(1)
 	assert.NoError(t, err)
 	assert.False(t, result,
 		"should not bypass when there are no checks at all — the block "+
@@ -264,7 +264,7 @@ func TestBypass_TruncatedStatuses_ReturnsFalse(t *testing.T) {
 		fakeGitHubAPIWithTotals(t, pr, makeIssue(), statuses, 5, nil, 0))
 	defer server.Close()
 
-	result, err := svc.isMergeableOrOnlyBlockedByDiggerApply(1)
+	result, err := svc.IsMergeableForApply(1)
 	assert.NoError(t, err)
 	assert.False(t, result,
 		"should refuse to bypass when commit status results are truncated")
@@ -285,7 +285,7 @@ func TestBypass_TruncatedCheckRuns_ReturnsFalse(t *testing.T) {
 		fakeGitHubAPIWithTotals(t, pr, makeIssue(), statuses, 1, checkRuns, 150))
 	defer server.Close()
 
-	result, err := svc.isMergeableOrOnlyBlockedByDiggerApply(1)
+	result, err := svc.IsMergeableForApply(1)
 	assert.NoError(t, err)
 	assert.False(t, result,
 		"should refuse to bypass when check run results are truncated")
@@ -293,27 +293,16 @@ func TestBypass_TruncatedCheckRuns_ReturnsFalse(t *testing.T) {
 
 func TestIsMergeableForApply_FallsBackForNonGithub(t *testing.T) {
 	mock := MockCiService{CommentsPerPr: map[int][]*ci.Comment{}}
-	result, err := IsMergeableForApply(&mock, 1)
+	result, err := ci.IsMergeableForApply(&mock, 1)
 	assert.NoError(t, err)
 	assert.True(t, result, "should fall back to IsMergeable for non-GitHub providers")
 }
 
-// TestIsMergeableForApply_BypassRunsForValueTypedGithubService guards
-// against an interface-dispatch regression.
-//
-// GithubService uses value receivers, so both GithubService and
-// *GithubService satisfy ci.PullRequestService. The spec-driven CLI apply
-// path obtains its service from GithubServiceProviderBasic.NewService,
-// which returns a GithubService by value; that value is then boxed into a
-// ci.PullRequestService interface variable (see libs/spec/providers.go).
-// If IsMergeableForApply only handles the *GithubService form, the
-// digger/apply bypass silently falls through to plain IsMergeable on the
-// CLI path — exactly the path issue #1180 is about — and the fix becomes
-// a no-op where it is needed most.
-//
-// This test reproduces the boxing with a blocked PR whose only failing
-// check is digger/apply. If the bypass runs, the result is true; if the
-// wrapper drops to plain IsMergeable, the result is false.
+// TestIsMergeableForApply_BypassRunsForValueTypedGithubService verifies that
+// the ci.ApplyMergeChecker capability interface is satisfied when a
+// GithubService value (not pointer) is boxed into ci.PullRequestService.
+// This mirrors the spec-driven CLI path (libs/spec/providers.go) where
+// GithubServiceProviderBasic.NewService returns a GithubService by value.
 func TestIsMergeableForApply_BypassRunsForValueTypedGithubService(t *testing.T) {
 	pr := makePR("blocked", false)
 	statuses := []*gh.RepoStatus{
@@ -324,12 +313,10 @@ func TestIsMergeableForApply_BypassRunsForValueTypedGithubService(t *testing.T) 
 		fakeGitHubAPI(t, pr, makeIssue(), statuses, nil))
 	defer server.Close()
 
-	// Box the GithubService VALUE (not &svc) into the interface — this
-	// mirrors libs/spec/providers.go, which returns the result of
-	// GithubServiceProviderBasic.NewService directly.
+	// Box the GithubService VALUE (not &svc) into the interface.
 	var iface ci.PullRequestService = svc
 
-	result, err := IsMergeableForApply(iface, 1)
+	result, err := ci.IsMergeableForApply(iface, 1)
 	assert.NoError(t, err)
 	assert.True(t, result,
 		"digger/apply bypass must run when GithubService is stored in "+

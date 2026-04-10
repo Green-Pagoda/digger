@@ -810,7 +810,6 @@ func (svc GithubService) IsMergeableForApply(prNumber int) (bool, error) {
 	return true, nil
 }
 
-
 func (svc GithubService) IsMerged(prNumber int) (bool, error) {
 	// we have to check if prNumber is an issue or not
 	issue, _, err := svc.Client.Issues.Get(context.Background(), svc.Owner, svc.RepoName, prNumber)
