@@ -1,7 +1,7 @@
 # Branch Haiku: feat/apply-mergability-bypass-1180
 
 ```
-Apply blocks itself —
-only when truly the cause,
-the gate swings open.
+One fetch, one snapshot —
+truncation guards the bypass,
+no silent misses.
 ```
