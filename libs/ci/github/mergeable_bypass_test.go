@@ -486,3 +486,89 @@ func TestInspectMergeability_GraphQLTimeout_ReturnsError(t *testing.T) {
 	assert.Error(t, err, "expected timeout error from slow GraphQL endpoint")
 	assert.Equal(t, MergeabilityState{}, state)
 }
+
+// TestInspectMergeability_FailingChecks_IdentifiesDiggerApply covers the
+// end-to-end happy path that #1180 exists to unlock: a blocked PR where
+// digger/apply appears in the rollup as a failing check gets surfaced in
+// FailingChecks with that exact name, so the policy wrapper can match it
+// against the self-blocking allowlist.
+//
+// Each subcase covers a different shape GitHub's statusCheckRollup can
+// deliver digger/apply in — classic commit status (StatusContext), GitHub
+// Apps-style CheckRun while a prior run is still in flight, and CheckRun
+// after a completed FAILURE. The CheckRun paths are the primary real-world
+// delivery in the chicken-and-egg scenario and were previously only
+// covered indirectly through the policy-layer fake.
+func TestInspectMergeability_FailingChecks_IdentifiesDiggerApply(t *testing.T) {
+	cases := []struct {
+		name      string
+		statuses  []*gh.RepoStatus
+		checkRuns []*gh.CheckRun
+	}{
+		{
+			name: "digger/apply as StatusContext (PENDING)",
+			statuses: []*gh.RepoStatus{
+				{Context: gh.String("digger/apply"), State: gh.String("pending")},
+			},
+		},
+		{
+			name: "digger/apply as CheckRun (in-flight, no conclusion)",
+			checkRuns: []*gh.CheckRun{
+				{Name: gh.String("digger/apply"), Status: gh.String("in_progress")},
+			},
+		},
+		{
+			name: "digger/apply as CheckRun (completed FAILURE)",
+			checkRuns: []*gh.CheckRun{
+				{Name: gh.String("digger/apply"), Status: gh.String("completed"), Conclusion: gh.String("failure")},
+			},
+		},
+		{
+			name: "digger/apply as CheckRun alongside a passing StatusContext",
+			statuses: []*gh.RepoStatus{
+				{Context: gh.String("ci/build"), State: gh.String("success")},
+			},
+			checkRuns: []*gh.CheckRun{
+				{Name: gh.String("digger/apply"), Status: gh.String("in_progress")},
+			},
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			pr := makePR("blocked", false)
+			svc, server := newTestGithubService(t,
+				fakeGitHubAPI(t, pr, makeIssue(), c.statuses, c.checkRuns))
+			defer server.Close()
+
+			state, err := svc.InspectMergeability(1)
+			assert.NoError(t, err)
+			assert.True(t, state.Blocked)
+			assert.False(t, state.Truncated)
+			assert.False(t, state.ReviewsBlocking)
+			assert.Equal(t, []string{"digger/apply"}, state.FailingChecks,
+				"digger/apply must land in FailingChecks under its canonical name so the policy wrapper can match it against the self-blocking allowlist")
+		})
+	}
+}
+
+// TestInspectMergeability_FailingChecks_MixedBlockers verifies that when a
+// non-self-blocking check is failing alongside digger/apply, both names
+// surface in FailingChecks. The policy wrapper's job is then to refuse
+// bypass because FailingChecks is not a subset of the self-blocking list —
+// but that decision needs both names to be visible to make it.
+func TestInspectMergeability_FailingChecks_MixedBlockers(t *testing.T) {
+	pr := makePR("blocked", false)
+	checkRuns := []*gh.CheckRun{
+		{Name: gh.String("digger/apply"), Status: gh.String("in_progress")},
+		{Name: gh.String("ci/build"), Status: gh.String("completed"), Conclusion: gh.String("failure")},
+	}
+	svc, server := newTestGithubService(t,
+		fakeGitHubAPI(t, pr, makeIssue(), nil, checkRuns))
+	defer server.Close()
+
+	state, err := svc.InspectMergeability(1)
+	assert.NoError(t, err)
+	assert.True(t, state.Blocked)
+	assert.ElementsMatch(t, []string{"digger/apply", "ci/build"}, state.FailingChecks,
+		"both the self-blocking check and the real blocker must surface so the policy wrapper can refuse bypass")
+}
