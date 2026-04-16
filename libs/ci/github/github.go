@@ -780,7 +780,11 @@ func (svc GithubService) InspectMergeability(prNumber int) (MergeabilityState, e
 	// rather than "no failures" — otherwise a passing digger/apply plus a
 	// hidden failing check would let the bypass fire unsafely.
 	if result.TotalCount > len(result.Contexts) {
-		return newBlockedState(reviewsBlocking, nil, true), nil
+		return MergeabilityState{
+			Blocked:         true,
+			ReviewsBlocking: reviewsBlocking,
+			Truncated:       true,
+		}, nil
 	}
 
 	var failing []string
@@ -789,7 +793,11 @@ func (svc GithubService) InspectMergeability(prNumber int) (MergeabilityState, e
 			failing = append(failing, cc.DisplayName())
 		}
 	}
-	return newBlockedState(reviewsBlocking, failing, false), nil
+	return MergeabilityState{
+		Blocked:         true,
+		ReviewsBlocking: reviewsBlocking,
+		FailingChecks:   failing,
+	}, nil
 }
 
 func (svc GithubService) IsMerged(prNumber int) (bool, error) {
