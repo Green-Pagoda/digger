@@ -690,24 +690,16 @@ func isMergeableState(mergeableState string) bool {
 	return exists
 }
 
+// IsMergeable reports whether the PR can be merged under the platform's
+// normal rules. Delegates to InspectMergeability so the two methods
+// cannot drift apart; callers that need structured state should call
+// InspectMergeability directly.
 func (svc GithubService) IsMergeable(prNumber int) (bool, error) {
-	isPullRequest, err := svc.IsPullRequest(prNumber)
+	state, err := svc.InspectMergeability(prNumber)
 	if err != nil {
-		slog.Error("could not get pull request type", "error", err, "prNumber", prNumber)
-		return false, fmt.Errorf("could not get pull request type: %v", err)
+		return false, err
 	}
-
-	// if this is an issue it will always be merable (closable
-	if !isPullRequest {
-		return true, nil
-	}
-
-	pr, _, err := svc.Client.PullRequests.Get(context.Background(), svc.Owner, svc.RepoName, prNumber)
-	if err != nil {
-		slog.Error("error getting pull request", "error", err, "prNumber", prNumber)
-		return false, fmt.Errorf("error getting pull request: %v", err)
-	}
-	return pr.GetMergeable() && isMergeableState(pr.GetMergeableState()), nil
+	return state.Mergeable, nil
 }
 
 // InspectMergeability returns a structured ci.MergeabilityState describing
