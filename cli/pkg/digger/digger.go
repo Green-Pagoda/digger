@@ -384,7 +384,7 @@ func run(command string, job orchestrator.Job, policyChecker policy.Checker, org
 		// Bypass the chicken-and-egg where the apply check itself blocks the
 		// PR. The check-name policy lives in apply_requirements; the CI
 		// provider only reports raw mergeability state.
-		isMergeable, err := ci.IsMergeableForApply(prService, *job.PullRequestNumber, apply_requirements.SelfBlockingApplyChecks)
+		isMergeable, err := ci.IsMergeableForApply(prService, *job.PullRequestNumber, apply_requirements.SelfBlockingApplyChecks())
 		if err != nil {
 			msg := fmt.Sprintf("Failed to check if PR is mergeable. %v", err)
 			return nil, msg, fmt.Errorf("%s", msg)
