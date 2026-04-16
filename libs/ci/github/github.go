@@ -718,34 +718,34 @@ func (svc GithubService) IsMergeable(prNumber int) (bool, error) {
 func (svc GithubService) InspectMergeability(prNumber int) (ci.MergeabilityState, error) {
 	isPullRequest, err := svc.IsPullRequest(prNumber)
 	if err != nil {
-		return ci.MergeabilityState{}, fmt.Errorf("could not get pull request type: %v", err)
+		return ci.UnresolvableState(), fmt.Errorf("could not get pull request type: %v", err)
 	}
 	if !isPullRequest {
 		// Issues are always "mergeable" (closable) for this workflow's purposes.
-		return ci.MergeabilityState{Mergeable: true}, nil
+		return ci.MergeableState(), nil
 	}
 
 	// Fetch the PR once and use that single snapshot for all decisions.
 	pr, _, err := svc.Client.PullRequests.Get(context.Background(), svc.Owner, svc.RepoName, prNumber)
 	if err != nil {
-		return ci.MergeabilityState{}, fmt.Errorf("error getting pull request: %v", err)
+		return ci.UnresolvableState(), fmt.Errorf("error getting pull request: %v", err)
 	}
 
 	if pr.GetMergeable() && isMergeableState(pr.GetMergeableState()) {
-		return ci.MergeabilityState{Mergeable: true}, nil
+		return ci.MergeableState(), nil
 	}
 
 	// Only the "blocked" state is potentially recoverable by re-running a
 	// check. Other non-mergeable states (dirty, behind, unknown) require
 	// human intervention regardless of any status check.
 	if strings.ToLower(pr.GetMergeableState()) != "blocked" {
-		return ci.MergeabilityState{}, nil
+		return ci.UnresolvableState(), nil
 	}
 
 	// Reaching the GraphQL inspector requires authentication; surface
 	// provisioning bugs rather than silently degrading.
 	if svc.Token == "" {
-		return ci.MergeabilityState{}, fmt.Errorf("digger/apply bypass requires GithubService.Token to be populated")
+		return ci.UnresolvableState(), fmt.Errorf("digger/apply bypass requires GithubService.Token to be populated")
 	}
 
 	client := svc.HTTPClient
@@ -756,17 +756,7 @@ func (svc GithubService) InspectMergeability(prNumber int) (ci.MergeabilityState
 		svc.Client.BaseURL.String(), string(svc.Token),
 		svc.Owner, svc.RepoName, prNumber)
 	if err != nil {
-		return ci.MergeabilityState{}, fmt.Errorf("error querying GraphQL for mergeability inspection: %v", err)
-	}
-
-	// ReviewDecision allowlist: treat any non-APPROVED, non-empty value as
-	// blocking. An empty decision means no review policy is configured;
-	// anything else (REVIEW_REQUIRED, CHANGES_REQUESTED, future enum
-	// values) cannot be resolved by re-running a status check, so the
-	// bypass must refuse.
-	state := ci.MergeabilityState{
-		Blocked:         true,
-		ReviewsBlocking: result.ReviewDecision != "" && result.ReviewDecision != "APPROVED",
+		return ci.UnresolvableState(), fmt.Errorf("error querying GraphQL for mergeability inspection: %v", err)
 	}
 
 	// Truncation guard: signal to the caller that the full check list was
@@ -774,18 +764,23 @@ func (svc GithubService) InspectMergeability(prNumber int) (ci.MergeabilityState
 	// rather than "no failures" — otherwise a passing digger/apply plus a
 	// hidden failing check would let the bypass fire unsafely.
 	if result.TotalCount > len(result.Contexts) {
-		state.Truncated = true
-		state.TotalChecks = result.TotalCount
-		state.FetchedChecks = len(result.Contexts)
-		return state, nil
+		return ci.TruncatedState(len(result.Contexts), result.TotalCount), nil
 	}
 
+	// ReviewDecision allowlist: treat any non-APPROVED, non-empty value as
+	// blocking. An empty decision means no review policy is configured;
+	// anything else (REVIEW_REQUIRED, CHANGES_REQUESTED, future enum
+	// values) cannot be resolved by re-running a status check, so the
+	// bypass must refuse.
+	reviewsBlocking := result.ReviewDecision != "" && result.ReviewDecision != "APPROVED"
+
+	var failing []string
 	for _, cc := range result.Contexts {
 		if !cc.IsPassing() {
-			state.FailingChecks = append(state.FailingChecks, cc.DisplayName())
+			failing = append(failing, cc.DisplayName())
 		}
 	}
-	return state, nil
+	return ci.BlockedByChecksState(failing, reviewsBlocking), nil
 }
 
 func (svc GithubService) IsMerged(prNumber int) (bool, error) {
