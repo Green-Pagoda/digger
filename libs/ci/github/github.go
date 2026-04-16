@@ -35,7 +35,7 @@ func (_ GithubServiceProviderBasic) NewService(ghToken string, repoName string, 
 		Client:   client,
 		RepoName: repoName,
 		Owner:    owner,
-		Token:    Token(ghToken),
+		Token:    ghToken,
 	}, nil
 }
 
@@ -43,9 +43,8 @@ type GithubService struct {
 	Client   *github.Client
 	RepoName string
 	Owner    string
-	// Token is required for the GraphQL query in InspectMergeability;
-	// wrapped so accidental formatting cannot leak it.
-	Token Token
+	// Token is required for the GraphQL query in InspectMergeability.
+	Token string
 	// HTTPClient, when non-nil, is the HTTP client used for the GraphQL
 	// bypass request in InspectMergeability. Nil means use the package
 	// default (30s timeout). Exposed as a field so tests can inject a
@@ -753,7 +752,7 @@ func (svc GithubService) InspectMergeability(prNumber int) (ci.MergeabilityState
 		client = defaultBypassHTTPClient
 	}
 	result, err := queryBypassGraphQL(context.Background(), client,
-		svc.Client.BaseURL.String(), string(svc.Token),
+		svc.Client.BaseURL.String(), svc.Token,
 		svc.Owner, svc.RepoName, prNumber)
 	if err != nil {
 		return ci.UnresolvableState(), fmt.Errorf("error querying GraphQL for mergeability inspection: %v", err)
