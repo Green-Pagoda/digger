@@ -8,6 +8,14 @@ import (
 	"log/slog"
 )
 
+// SelfBlockingApplyChecks lists check names that, when they are the sole
+// blocker on a PR, the apply workflow itself is allowed to bypass. This
+// breaks the chicken-and-egg where the apply check is configured as a
+// required status check on the PR being applied. The list lives here, in
+// the apply workflow's package, because it is a workflow policy — the CI
+// provider only enumerates raw check state. See #1180.
+var SelfBlockingApplyChecks = []string{"digger/apply"}
+
 // IgnoreMergeabilityForProject will strip out the 'mergeability' requirement if
 // the project's workflow has specified skip_merge_check: true
 func IgnoreMergeabilityForProject(project digger_config.Project, jobs []scheduler.Job) bool {
@@ -19,9 +27,10 @@ func IgnoreMergeabilityForProject(project digger_config.Project, jobs []schedule
 	return job.SkipMergeCheck
 }
 func CheckApplyRequirements(ghService ci.PullRequestService, impactedProjects []digger_config.Project, jobs []scheduler.Job, prNumber int, sourceBranch string, targetBranch string) error {
-	// Use ci.IsMergeableForApply so that providers implementing
-	// ApplyMergeChecker (e.g. GitHub) can bypass self-blocking checks. See #1180.
-	isMergeable, err := ci.IsMergeableForApply(ghService, prNumber)
+	// Bypass the chicken-and-egg where the apply check itself blocks the PR.
+	// The check-name policy lives in this package; the CI provider only
+	// reports raw mergeability state. See #1180.
+	isMergeable, err := ci.IsMergeableForApply(ghService, prNumber, SelfBlockingApplyChecks)
 	if err != nil {
 		slog.Error("Error checking if PR is mergeable", "prNumber", prNumber)
 		return fmt.Errorf("error checking if PR is mergeable")

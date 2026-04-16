@@ -23,9 +23,8 @@ const bypassHTTPTimeout = 30 * time.Second
 // http.DefaultClient (which has no timeout and can be mutated elsewhere).
 var bypassHTTPClient = &http.Client{Timeout: bypassHTTPTimeout}
 
-// bypassQuery is the GraphQL query used by IsMergeableForApply to fetch review
-// decision and status check rollup in a single call. This replaces two REST
-// calls (GetCombinedStatus + ListCheckRunsForRef).
+// bypassQuery is the GraphQL query used by InspectMergeability to fetch
+// reviewDecision and the status check rollup in a single call.
 const bypassQuery = `
 query($owner: String!, $repo: String!, $number: Int!) {
   repository(owner: $owner, name: $repo) {

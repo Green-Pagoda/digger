@@ -42,8 +42,8 @@ type GithubService struct {
 	Client   *github.Client
 	RepoName string
 	Owner    string
-	// Token is required for the digger/apply bypass GraphQL query; see
-	// IsMergeableForApply. Wrapped so accidental formatting cannot leak it.
+	// Token is required for the GraphQL query in InspectMergeability;
+	// wrapped so accidental formatting cannot leak it.
 	Token Token
 }
 
@@ -710,102 +710,74 @@ func (svc GithubService) IsMergeable(prNumber int) (bool, error) {
 	return pr.GetMergeable() && isMergeableState(pr.GetMergeableState()), nil
 }
 
-// IsMergeableForApply checks whether a PR is mergeable, with a special case:
-// if the PR's mergeable state is "blocked" solely because the "digger/apply"
-// status check hasn't passed yet, it returns true. This breaks the
-// chicken-and-egg cycle where apply can't run because the PR isn't mergeable,
-// but the PR can't become mergeable until apply succeeds.
+// InspectMergeability returns a structured ci.MergeabilityState describing
+// why a PR is or is not mergeable, with enough detail for callers to apply
+// workflow-specific bypass policies. It does NOT decide whether any specific
+// check is bypassable — that policy lives in the consuming package
+// (apply_requirements). See: https://github.com/diggerhq/digger/issues/1180
 //
-// Satisfies ci.ApplyMergeChecker.
-// See: https://github.com/diggerhq/digger/issues/1180
-func (svc GithubService) IsMergeableForApply(prNumber int) (bool, error) {
+// Satisfies ci.BlockedMergeInspector.
+func (svc GithubService) InspectMergeability(prNumber int) (*ci.MergeabilityState, error) {
 	isPullRequest, err := svc.IsPullRequest(prNumber)
 	if err != nil {
-		return false, fmt.Errorf("could not get pull request type: %v", err)
+		return nil, fmt.Errorf("could not get pull request type: %v", err)
 	}
 	if !isPullRequest {
-		return true, nil // issues are always "mergeable" (closable)
+		// Issues are always "mergeable" (closable) for this workflow's purposes.
+		return &ci.MergeabilityState{Mergeable: true}, nil
 	}
 
 	// Fetch the PR once and use that single snapshot for all decisions.
 	pr, _, err := svc.Client.PullRequests.Get(context.Background(), svc.Owner, svc.RepoName, prNumber)
 	if err != nil {
-		return false, fmt.Errorf("error getting pull request: %v", err)
+		return nil, fmt.Errorf("error getting pull request: %v", err)
 	}
 
-	// Fast path: PR is already mergeable by normal rules.
 	if pr.GetMergeable() && isMergeableState(pr.GetMergeableState()) {
-		return true, nil
+		return &ci.MergeabilityState{Mergeable: true}, nil
 	}
 
-	// Only attempt the bypass when the state is specifically "blocked"
-	// (branch protection checks failing). Other states like "dirty" (merge
-	// conflicts) or "behind" cannot be resolved by running apply.
+	// Only the "blocked" state is potentially recoverable by re-running a
+	// check. Other non-mergeable states (dirty, behind, unknown) require
+	// human intervention regardless of any status check.
 	if strings.ToLower(pr.GetMergeableState()) != "blocked" {
-		return false, nil
+		return &ci.MergeabilityState{}, nil
 	}
 
-	// The bypass requires a token to reach GitHub's GraphQL endpoint. All
-	// production constructors populate it; an empty value indicates a
-	// provisioning bug that must be surfaced, not silently degraded.
+	// Reaching the GraphQL inspector requires authentication; surface
+	// provisioning bugs rather than silently degrading.
 	if svc.Token == "" {
-		return false, fmt.Errorf("digger/apply bypass requires GithubService.Token to be populated")
+		return nil, fmt.Errorf("digger/apply bypass requires GithubService.Token to be populated")
 	}
-	return svc.bypassViaGraphQL(prNumber)
-}
 
-// bypassViaGraphQL uses a single GraphQL query to check reviewDecision and
-// all status checks. It bails early if reviews are blocking, so we do not
-// waste work iterating checks when the block is non-check in origin.
-func (svc GithubService) bypassViaGraphQL(prNumber int) (bool, error) {
-	baseURL := svc.Client.BaseURL.String()
-	result, err := queryBypassGraphQL(context.Background(), baseURL, string(svc.Token), svc.Owner, svc.RepoName, prNumber)
+	result, err := queryBypassGraphQL(context.Background(),
+		svc.Client.BaseURL.String(), string(svc.Token),
+		svc.Owner, svc.RepoName, prNumber)
 	if err != nil {
-		return false, fmt.Errorf("error querying GraphQL for bypass check: %v", err)
+		return nil, fmt.Errorf("error querying GraphQL for mergeability inspection: %v", err)
 	}
 
-	// Early bail: if reviews are required but not approved, the block is not
-	// caused by status checks — no need to inspect checks at all.
-	if result.ReviewDecision == "REVIEW_REQUIRED" || result.ReviewDecision == "CHANGES_REQUESTED" {
-		slog.Debug("PR blocked by review requirements, not status checks",
-			"prNumber", prNumber, "reviewDecision", result.ReviewDecision)
-		return false, nil
+	state := &ci.MergeabilityState{
+		Blocked:         true,
+		ReviewsBlocking: result.ReviewDecision == "REVIEW_REQUIRED" || result.ReviewDecision == "CHANGES_REQUESTED",
 	}
 
-	// Truncation guard: refuse to bypass if we can't see all checks.
+	// Truncation guard: leave FailingChecks empty so the caller's predicate
+	// refuses to bypass — we cannot prove the only blocker is one we know how
+	// to resolve when we cannot see the full check list.
 	if result.TotalCount > len(result.Contexts) {
-		slog.Warn("status check results truncated — refusing to bypass",
-			"total", result.TotalCount, "fetched", len(result.Contexts))
-		return false, nil
-	}
-
-	// Iterate checks: digger/apply must be present and non-passing, and
-	// everything else must be passing.
-	foundBlockingDiggerApply := false
-	for _, cc := range result.Contexts {
-		if cc.DisplayName() == "digger/apply" {
-			if !cc.IsPassing() {
-				foundBlockingDiggerApply = true
-			}
-			continue
-		}
-		if !cc.IsPassing() {
-			slog.Debug("PR blocked by non-digger/apply check",
-				"name", cc.DisplayName(), "prNumber", prNumber)
-			return false, nil
-		}
-	}
-
-	if !foundBlockingDiggerApply {
-		slog.Debug("PR is blocked but digger/apply is not pending/failing — "+
-			"block is caused by non-status-check requirements",
+		slog.Warn("status check results truncated — leaving FailingChecks empty",
+			"total", result.TotalCount, "fetched", len(result.Contexts),
 			"prNumber", prNumber)
-		return false, nil
+		return state, nil
 	}
 
-	slog.Info("PR is blocked only by digger/apply — bypassing mergeability check",
-		"prNumber", prNumber)
-	return true, nil
+	for _, cc := range result.Contexts {
+		if !cc.IsPassing() {
+			state.FailingChecks = append(state.FailingChecks, cc.DisplayName())
+		}
+	}
+	return state, nil
 }
 
 func (svc GithubService) IsMerged(prNumber int) (bool, error) {
