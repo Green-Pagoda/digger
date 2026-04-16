@@ -210,6 +210,31 @@ func TestBypass_BlockedOnlyByDiggerApply_ReturnsTrue(t *testing.T) {
 	assert.True(t, result, "should bypass when digger/apply is the only blocker")
 }
 
+// TestBypass_BlockedOnlyByDiggerApplyCheckRun_ReturnsTrue mirrors
+// TestBypass_BlockedOnlyByDiggerApply_ReturnsTrue but posts digger/apply as
+// a CheckRun rather than a commit status. GitHub's newer checks API is
+// increasingly the preferred reporting mechanism, and this case hits a
+// different branch of checkContext.IsPassing (Conclusion vs State), so
+// coverage for the feature's primary check name in CheckRun form prevents
+// a silent behavior gap if the backend ever switches form.
+func TestBypass_BlockedOnlyByDiggerApplyCheckRun_ReturnsTrue(t *testing.T) {
+	pr := makePR("blocked", false)
+	statuses := []*gh.RepoStatus{
+		{Context: gh.String("digger/plan"), State: gh.String("success")},
+	}
+	checkRuns := []*gh.CheckRun{
+		{Name: gh.String("digger/apply"), Status: gh.String("in_progress")},
+		{Name: gh.String("ci/build"), Status: gh.String("completed"), Conclusion: gh.String("success")},
+	}
+	svc, server := newTestGithubService(t,
+		fakeGitHubAPI(t, pr, makeIssue(), statuses, checkRuns))
+	defer server.Close()
+
+	result, err := ci.IsMergeableForApply(svc, 1, []string{"digger/apply"})
+	assert.NoError(t, err)
+	assert.True(t, result, "should bypass when digger/apply CheckRun is the only blocker")
+}
+
 func TestBypass_BlockedByOtherStatus_ReturnsFalse(t *testing.T) {
 	pr := makePR("blocked", false)
 	statuses := []*gh.RepoStatus{
