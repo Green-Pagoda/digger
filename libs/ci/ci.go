@@ -1,6 +1,9 @@
 package ci
 
-import "strconv"
+import (
+	"fmt"
+	"strconv"
+)
 
 type PullRequestService interface {
 	GetChangedFiles(prNumber int) ([]string, error)
@@ -50,10 +53,23 @@ type MergeabilityState struct {
 
 	// FailingChecks lists the names of non-passing required status checks
 	// and check runs. Only populated when Blocked is true. Empty means the
-	// inspector saw no enumerable check failures (so the block must come
-	// from another non-check requirement, or the inspector could not see
-	// the full set due to truncation).
+	// inspector saw no enumerable check failures, so the block must come
+	// from another non-check requirement.
 	FailingChecks []string
+
+	// Truncated is true when the inspector could not enumerate the full
+	// set of checks (e.g. the upstream API paginated and more pages exist).
+	// Callers that rely on FailingChecks being exhaustive must treat a
+	// truncated state as "cannot determine" rather than "no failures".
+	Truncated bool
+
+	// TotalChecks is the number of checks the inspector knows about in
+	// total. When Truncated is true, len(FailingChecks) < TotalChecks.
+	TotalChecks int
+
+	// FetchedChecks is the number of checks the inspector actually saw.
+	// When Truncated is true, this is the subset that was enumerable.
+	FetchedChecks int
 }
 
 // BlockedMergeInspector is an optional capability for providers that can
@@ -89,6 +105,14 @@ func IsMergeableForApply(svc PullRequestService, prNumber int, selfBlockingCheck
 	if !state.Blocked || state.ReviewsBlocking {
 		return false, nil
 	}
+	if state.Truncated {
+		// We cannot prove the only blocker is a self-blocking check when we
+		// cannot see the full list. Surface the real cause to the caller
+		// rather than falsely reporting "not mergeable, ensure checks pass".
+		return false, fmt.Errorf(
+			"cannot determine mergeability: status check list truncated (%d of %d fetched)",
+			state.FetchedChecks, state.TotalChecks)
+	}
 
 	selfBlocking := make(map[string]bool, len(selfBlockingChecks))
 	for _, name := range selfBlockingChecks {
@@ -103,7 +127,7 @@ func IsMergeableForApply(svc PullRequestService, prNumber int, selfBlockingCheck
 	}
 	// Refuse to bypass when no self-blocker was actually present — the block
 	// must be caused by something we cannot resolve (signed commits,
-	// unresolved conversations, truncated check enumeration, etc.).
+	// unresolved conversations, etc.).
 	return foundSelfBlocker, nil
 }
 

@@ -352,11 +352,13 @@ func fakeGitHubAPIWithTotals(t *testing.T, pr *gh.PullRequest, issue *gh.Issue, 
 	})
 }
 
-// TestBypass_TruncatedStatuses_ReturnsFalse verifies that the bypass refuses
+// TestBypass_TruncatedStatuses_ReturnsError verifies that the bypass refuses
 // to fire when the combined status response is truncated (more statuses exist
-// than were returned). This prevents silently missing a failing non-digger
-// check that fell beyond the first page.
-func TestBypass_TruncatedStatuses_ReturnsFalse(t *testing.T) {
+// than were returned) and surfaces the truncation as an actionable error.
+// This prevents silently missing a failing non-digger check that fell beyond
+// the first page, and tells operators the real cause rather than the generic
+// "ensure all checks pass" message.
+func TestBypass_TruncatedStatuses_ReturnsError(t *testing.T) {
 	pr := makePR("blocked", false)
 	statuses := []*gh.RepoStatus{
 		{Context: gh.String("digger/apply"), State: gh.String("pending")},
@@ -367,14 +369,18 @@ func TestBypass_TruncatedStatuses_ReturnsFalse(t *testing.T) {
 	defer server.Close()
 
 	result, err := ci.IsMergeableForApply(svc, 1, []string{"digger/apply"})
-	assert.NoError(t, err)
+	assert.Error(t, err,
+		"truncation should surface as an error so the real cause reaches the operator")
+	assert.Contains(t, err.Error(), "truncated",
+		"error message should name truncation as the cause")
 	assert.False(t, result,
 		"should refuse to bypass when commit status results are truncated")
 }
 
-// TestBypass_TruncatedCheckRuns_ReturnsFalse verifies that the bypass refuses
-// to fire when the check runs response is truncated.
-func TestBypass_TruncatedCheckRuns_ReturnsFalse(t *testing.T) {
+// TestBypass_TruncatedCheckRuns_ReturnsError verifies that the bypass refuses
+// to fire when the check runs response is truncated and surfaces the
+// truncation as an actionable error.
+func TestBypass_TruncatedCheckRuns_ReturnsError(t *testing.T) {
 	pr := makePR("blocked", false)
 	statuses := []*gh.RepoStatus{
 		{Context: gh.String("digger/apply"), State: gh.String("pending")},
@@ -389,7 +395,10 @@ func TestBypass_TruncatedCheckRuns_ReturnsFalse(t *testing.T) {
 	defer server.Close()
 
 	result, err := ci.IsMergeableForApply(svc, 1, []string{"digger/apply"})
-	assert.NoError(t, err)
+	assert.Error(t, err,
+		"truncation should surface as an error so the real cause reaches the operator")
+	assert.Contains(t, err.Error(), "truncated",
+		"error message should name truncation as the cause")
 	assert.False(t, result,
 		"should refuse to bypass when check run results are truncated")
 }

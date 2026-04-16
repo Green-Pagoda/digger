@@ -759,13 +759,14 @@ func (svc GithubService) InspectMergeability(prNumber int) (ci.MergeabilityState
 		ReviewsBlocking: result.ReviewDecision != "" && result.ReviewDecision != "APPROVED",
 	}
 
-	// Truncation guard: leave FailingChecks empty so the caller's predicate
-	// refuses to bypass — we cannot prove the only blocker is one we know how
-	// to resolve when we cannot see the full check list.
+	// Truncation guard: signal to the caller that the full check list was
+	// not visible. Callers must treat a truncated state as "cannot determine"
+	// rather than "no failures" — otherwise a passing digger/apply plus a
+	// hidden failing check would let the bypass fire unsafely.
 	if result.TotalCount > len(result.Contexts) {
-		slog.Warn("status check results truncated — leaving FailingChecks empty",
-			"total", result.TotalCount, "fetched", len(result.Contexts),
-			"prNumber", prNumber)
+		state.Truncated = true
+		state.TotalChecks = result.TotalCount
+		state.FetchedChecks = len(result.Contexts)
 		return state, nil
 	}
 
