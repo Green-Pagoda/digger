@@ -118,6 +118,11 @@ func (c checkContext) DisplayName() string {
 }
 
 // IsPassing returns true if the check/status has a successful outcome.
+// In-flight check runs (status IN_PROGRESS or QUEUED) have no Conclusion
+// yet and therefore return false — intentional, because the bypass must
+// treat any still-running check as a blocker until it completes. A hidden
+// non-digger/apply failure that hadn't yet concluded must not let the
+// bypass fire.
 func (c checkContext) IsPassing() bool {
 	if c.IsStatusContext() {
 		return c.State == "SUCCESS"
