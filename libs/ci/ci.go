@@ -60,7 +60,6 @@ type MergeabilityState struct {
 // enumerate why a PR is blocked. Workflows (e.g. the digger/apply
 // chicken-and-egg bypass) use the result to decide whether the block is
 // something they can resolve themselves.
-// See: https://github.com/diggerhq/digger/issues/1180
 type BlockedMergeInspector interface {
 	InspectMergeability(prNumber int) (*MergeabilityState, error)
 }

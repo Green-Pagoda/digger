@@ -714,7 +714,7 @@ func (svc GithubService) IsMergeable(prNumber int) (bool, error) {
 // why a PR is or is not mergeable, with enough detail for callers to apply
 // workflow-specific bypass policies. It does NOT decide whether any specific
 // check is bypassable — that policy lives in the consuming package
-// (apply_requirements). See: https://github.com/diggerhq/digger/issues/1180
+// (apply_requirements).
 //
 // Satisfies ci.BlockedMergeInspector.
 func (svc GithubService) InspectMergeability(prNumber int) (*ci.MergeabilityState, error) {
