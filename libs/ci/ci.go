@@ -2,6 +2,7 @@ package ci
 
 import (
 	"fmt"
+	"log/slog"
 	"strconv"
 )
 
@@ -133,6 +134,13 @@ func BlockedByChecksState(failing []string, reviewsBlocking bool) MergeabilitySt
 func IsMergeableForApply(svc PullRequestService, prNumber int, selfBlockingChecks []string) (bool, error) {
 	inspector, ok := svc.(BlockedMergeInspector)
 	if !ok {
+		// Non-GitHub providers (GitLab, Bitbucket, Azure) do not implement
+		// the inspector capability — the chicken-and-egg this code solves
+		// is specific to GitHub's "blocked" branch-protection state. Debug
+		// level (not Warn) because this path fires on every apply for
+		// those providers and is expected behavior.
+		slog.Debug("BlockedMergeInspector not implemented; using plain IsMergeable (digger/apply bypass unsupported for this provider)",
+			"providerType", fmt.Sprintf("%T", svc), "prNumber", prNumber)
 		return svc.IsMergeable(prNumber)
 	}
 	state, err := inspector.InspectMergeability(prNumber)
