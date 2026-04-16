@@ -32,8 +32,8 @@ func CheckApplyRequirements(ghService ci.PullRequestService, impactedProjects []
 	// reports raw mergeability state. See #1180.
 	isMergeable, err := ci.IsMergeableForApply(ghService, prNumber, SelfBlockingApplyChecks)
 	if err != nil {
-		slog.Error("Error checking if PR is mergeable", "prNumber", prNumber)
-		return fmt.Errorf("error checking if PR is mergeable")
+		slog.Error("Error checking if PR is mergeable", "prNumber", prNumber, "error", err)
+		return fmt.Errorf("error checking if PR is mergeable: %w", err)
 	}
 	approvals, err := ghService.GetApprovals(prNumber)
 	if err != nil {
