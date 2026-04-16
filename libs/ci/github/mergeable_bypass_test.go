@@ -64,6 +64,30 @@ func fakeGitHubAPIFull(t *testing.T, pr *gh.PullRequest, issue *gh.Issue, status
 	})
 }
 
+// newGraphQLOverrideHandler serves the given graphqlHandler for POST /graphql
+// and the standard Issues.Get / PullRequests.Get fixtures for other paths.
+// Tests that need to exercise GraphQL-transport edge cases (malformed JSON,
+// error arrays, non-200 responses, timeouts) use this to vary only the
+// GraphQL behavior without restating the routing boilerplate.
+func newGraphQLOverrideHandler(t *testing.T, pr *gh.PullRequest, issue *gh.Issue, graphqlHandler http.HandlerFunc) http.Handler {
+	t.Helper()
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/graphql":
+			graphqlHandler(w, r)
+		case r.URL.Path == "/repos/testowner/testrepo/issues/1":
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(issue)
+		case r.URL.Path == "/repos/testowner/testrepo/pulls/1":
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(pr)
+		default:
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+		}
+	})
+}
+
 // buildGraphQLResponse constructs a canned GraphQL response matching the
 // bypassQuery shape from the same test data used for REST endpoints. Pass
 // totalCount=-1 to auto-use len(nodes) (no truncation); a value greater
@@ -309,23 +333,12 @@ func TestInspectMergeability_EmptyToken_ReturnsError(t *testing.T) {
 // an error instead of silently treating the response as empty.
 func TestInspectMergeability_GraphQLMalformedJSON_ReturnsError(t *testing.T) {
 	pr := makePR("blocked", false)
-	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch {
-		case r.Method == http.MethodPost && r.URL.Path == "/graphql":
+	handler := newGraphQLOverrideHandler(t, pr, makeIssue(),
+		func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusOK)
 			w.Write([]byte("{not-valid-json"))
-		case r.URL.Path == "/repos/testowner/testrepo/issues/1":
-			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(makeIssue())
-		case r.URL.Path == "/repos/testowner/testrepo/pulls/1":
-			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(pr)
-		default:
-			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
-			w.WriteHeader(http.StatusNotFound)
-		}
-	})
+		})
 	svc, server := newTestGithubService(t, handler)
 	defer server.Close()
 
@@ -371,10 +384,9 @@ func TestInspectMergeability_NotAPullRequest_ReturnsMergeable(t *testing.T) {
 // in the wrapped error rather than only the first.
 func TestInspectMergeability_GraphQLMultipleErrors_AllSurfaced(t *testing.T) {
 	pr := makePR("blocked", false)
-	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		switch {
-		case r.Method == http.MethodPost && r.URL.Path == "/graphql":
+	handler := newGraphQLOverrideHandler(t, pr, makeIssue(),
+		func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
 			json.NewEncoder(w).Encode(map[string]any{
 				"data": nil,
 				"errors": []map[string]any{
@@ -383,15 +395,7 @@ func TestInspectMergeability_GraphQLMultipleErrors_AllSurfaced(t *testing.T) {
 					{"message": "permission denied on reviewDecision"},
 				},
 			})
-		case r.URL.Path == "/repos/testowner/testrepo/issues/1":
-			json.NewEncoder(w).Encode(makeIssue())
-		case r.URL.Path == "/repos/testowner/testrepo/pulls/1":
-			json.NewEncoder(w).Encode(pr)
-		default:
-			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
-			w.WriteHeader(http.StatusNotFound)
-		}
-	})
+		})
 	svc, server := newTestGithubService(t, handler)
 	defer server.Close()
 
@@ -413,23 +417,12 @@ func TestInspectMergeability_GraphQLNon200_TruncatesErrorBody(t *testing.T) {
 	for i := range hugeBody {
 		hugeBody[i] = 'X'
 	}
-	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "text/html")
-		switch {
-		case r.Method == http.MethodPost && r.URL.Path == "/graphql":
+	handler := newGraphQLOverrideHandler(t, pr, makeIssue(),
+		func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "text/html")
 			w.WriteHeader(http.StatusBadGateway)
 			w.Write(hugeBody)
-		case r.URL.Path == "/repos/testowner/testrepo/issues/1":
-			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(makeIssue())
-		case r.URL.Path == "/repos/testowner/testrepo/pulls/1":
-			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(pr)
-		default:
-			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
-			w.WriteHeader(http.StatusNotFound)
-		}
-	})
+		})
 	svc, server := newTestGithubService(t, handler)
 	defer server.Close()
 
@@ -449,24 +442,13 @@ func TestInspectMergeability_GraphQLNon200_TruncatesErrorBody(t *testing.T) {
 // wedging the caller forever.
 func TestInspectMergeability_GraphQLTimeout_ReturnsError(t *testing.T) {
 	pr := makePR("blocked", false)
-	// Handler that blocks past the test's timeout on the GraphQL endpoint but
-	// answers other endpoints normally so we reach the timeout-prone code path.
-	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		switch {
-		case r.Method == http.MethodPost && r.URL.Path == "/graphql":
+	handler := newGraphQLOverrideHandler(t, pr, makeIssue(),
+		func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
 			time.Sleep(500 * time.Millisecond)
 			// Response after sleep is irrelevant — client will have cancelled.
 			w.WriteHeader(http.StatusOK)
-		case r.URL.Path == "/repos/testowner/testrepo/issues/1":
-			json.NewEncoder(w).Encode(makeIssue())
-		case r.URL.Path == "/repos/testowner/testrepo/pulls/1":
-			json.NewEncoder(w).Encode(pr)
-		default:
-			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
-			w.WriteHeader(http.StatusNotFound)
-		}
-	})
+		})
 	svc, server := newTestGithubService(t, handler)
 	defer server.Close()
 
