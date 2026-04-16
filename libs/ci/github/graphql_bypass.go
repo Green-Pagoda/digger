@@ -122,13 +122,24 @@ func (c checkContext) DisplayName() string {
 }
 
 // IsPassing returns true if the check/status has a successful outcome.
-// For StatusContext entries, only SUCCESS counts — ERROR, FAILURE,
-// PENDING, and EXPECTED are all treated as non-passing. For CheckRun
-// entries, in-flight runs (status IN_PROGRESS or QUEUED) have no
-// Conclusion yet and therefore return false. Both are intentional: the
-// bypass must treat any not-yet-succeeded check as a blocker until it
-// resolves, so a hidden non-self-blocking failure cannot slip through
-// while the bypass list is being matched.
+//
+// StatusContext (legacy commit statuses): only State=="SUCCESS" passes.
+// ERROR, FAILURE, PENDING, and EXPECTED are all treated as non-passing.
+//
+// CheckRun (GitHub Actions, GitHub Apps): Conclusion is only populated
+// once the run completes; in-flight runs (Status IN_PROGRESS or QUEUED)
+// carry Conclusion=="" and return false. Among terminal conclusions, only
+// SUCCESS, NEUTRAL, and SKIPPED are treated as passing. FAILURE, CANCELLED,
+// TIMED_OUT, ACTION_REQUIRED, STALE, and STARTUP_FAILURE are all treated
+// as non-passing.
+//
+// Both halves are intentionally conservative. For the digger/apply bypass
+// to be safe, an "unrecognized but present" check must block rather than
+// pass — otherwise a hidden non-self-blocking failure could slip through
+// while the self-blocking list is being matched. A cancelled digger/apply
+// run, for example, correctly lands in FailingChecks, where the self-
+// blocking check allowlist then decides to bypass; a cancelled ci/build
+// correctly stays in FailingChecks and refuses the bypass.
 func (c checkContext) IsPassing() bool {
 	if c.Context != "" {
 		return c.State == "SUCCESS"
