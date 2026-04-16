@@ -3,6 +3,7 @@ package apply_requirements
 import (
 	"fmt"
 	"github.com/diggerhq/digger/libs/ci"
+	digger_github "github.com/diggerhq/digger/libs/ci/github"
 	"github.com/diggerhq/digger/libs/digger_config"
 	"github.com/diggerhq/digger/libs/scheduler"
 	"log/slog"
@@ -34,7 +35,7 @@ func CheckApplyRequirements(ghService ci.PullRequestService, impactedProjects []
 	// Bypass the chicken-and-egg where the apply check itself blocks the PR.
 	// The check-name policy lives in this package; the CI provider only
 	// reports raw mergeability state.
-	isMergeable, err := ci.IsMergeableForApply(ghService, prNumber, SelfBlockingApplyChecks())
+	isMergeable, err := digger_github.IsMergeableForApply(ghService, prNumber, SelfBlockingApplyChecks())
 	if err != nil {
 		slog.Error("Error checking if PR is mergeable", "prNumber", prNumber, "error", err)
 		return fmt.Errorf("error checking if PR is mergeable: %w", err)
