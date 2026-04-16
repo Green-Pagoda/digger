@@ -2,6 +2,8 @@ package github
 
 import (
 	"encoding/json"
+	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -13,7 +15,23 @@ import (
 
 // newTestGithubService creates a GithubService backed by a fake HTTP server.
 // The handler receives all GitHub API requests and can return canned responses.
+// Token is set to "test-token" so the GraphQL bypass path is exercised.
 func newTestGithubService(t *testing.T, handler http.Handler) (GithubService, *httptest.Server) {
+	t.Helper()
+	server := httptest.NewServer(handler)
+	client := gh.NewClient(nil)
+	client.BaseURL, _ = client.BaseURL.Parse(server.URL + "/")
+	return GithubService{
+		Client:   client,
+		Owner:    "testowner",
+		RepoName: "testrepo",
+		Token:    "test-token",
+	}, server
+}
+
+// newTestGithubServiceNoToken creates a GithubService without a Token, forcing
+// the REST fallback path in IsMergeableForApply.
+func newTestGithubServiceNoToken(t *testing.T, handler http.Handler) (GithubService, *httptest.Server) {
 	t.Helper()
 	server := httptest.NewServer(handler)
 	client := gh.NewClient(nil)
@@ -26,13 +44,28 @@ func newTestGithubService(t *testing.T, handler http.Handler) (GithubService, *h
 }
 
 // fakeGitHubAPI builds an http.Handler that routes requests to the correct
-// canned response based on the URL path suffix.
+// canned response based on the URL path suffix. It handles both REST and
+// GraphQL endpoints. The reviewDecision parameter controls the GraphQL
+// reviewDecision field (empty string = null/no review rule).
 func fakeGitHubAPI(t *testing.T, pr *gh.PullRequest, issue *gh.Issue, statuses []*gh.RepoStatus, checkRuns []*gh.CheckRun) http.Handler {
+	return fakeGitHubAPIFull(t, pr, issue, statuses, checkRuns, "")
+}
+
+// fakeGitHubAPIFull is like fakeGitHubAPI but accepts a reviewDecision for the
+// GraphQL response.
+func fakeGitHubAPIFull(t *testing.T, pr *gh.PullRequest, issue *gh.Issue, statuses []*gh.RepoStatus, checkRuns []*gh.CheckRun, reviewDecision string) http.Handler {
 	t.Helper()
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 
 		switch {
+		// GraphQL endpoint
+		case r.Method == "POST" && r.URL.Path == "/graphql":
+			body, _ := io.ReadAll(r.Body)
+			_ = body // could validate query if needed
+			resp := buildGraphQLResponse(statuses, checkRuns, reviewDecision)
+			json.NewEncoder(w).Encode(resp)
+
 		// IsPullRequest calls Issues.Get
 		case r.Method == "GET" && r.URL.Path == "/repos/testowner/testrepo/issues/1":
 			json.NewEncoder(w).Encode(issue)
@@ -41,7 +74,7 @@ func fakeGitHubAPI(t *testing.T, pr *gh.PullRequest, issue *gh.Issue, statuses [
 		case r.Method == "GET" && r.URL.Path == "/repos/testowner/testrepo/pulls/1":
 			json.NewEncoder(w).Encode(pr)
 
-		// GetCombinedStatus
+		// GetCombinedStatus (REST fallback path)
 		case r.Method == "GET" && r.URL.Path == "/repos/testowner/testrepo/commits/abc123/status":
 			combined := &gh.CombinedStatus{
 				TotalCount: gh.Int(len(statuses)),
@@ -49,7 +82,7 @@ func fakeGitHubAPI(t *testing.T, pr *gh.PullRequest, issue *gh.Issue, statuses [
 			}
 			json.NewEncoder(w).Encode(combined)
 
-		// ListCheckRunsForRef
+		// ListCheckRunsForRef (REST fallback path)
 		case r.Method == "GET" && r.URL.Path == "/repos/testowner/testrepo/commits/abc123/check-runs":
 			result := &gh.ListCheckRunsResults{
 				Total:     gh.Int(len(checkRuns)),
@@ -62,6 +95,108 @@ func fakeGitHubAPI(t *testing.T, pr *gh.PullRequest, issue *gh.Issue, statuses [
 			w.WriteHeader(http.StatusNotFound)
 		}
 	})
+}
+
+// buildGraphQLResponse constructs a canned GraphQL response matching the
+// bypassQuery shape from the same test data used for REST endpoints.
+func buildGraphQLResponse(statuses []*gh.RepoStatus, checkRuns []*gh.CheckRun, reviewDecision string) map[string]any {
+	// Build context nodes from statuses and check runs
+	var nodes []map[string]string
+	for _, s := range statuses {
+		// GraphQL returns state in UPPER_CASE
+		nodes = append(nodes, map[string]string{
+			"context": s.GetContext(),
+			"state":   graphqlState(s.GetState()),
+		})
+	}
+	for _, cr := range checkRuns {
+		node := map[string]string{
+			"name":   cr.GetName(),
+			"status": graphqlCheckStatus(cr.GetStatus()),
+		}
+		if cr.GetConclusion() != "" {
+			node["conclusion"] = graphqlConclusion(cr.GetConclusion())
+		}
+		nodes = append(nodes, node)
+	}
+
+	// reviewDecision is null (omitted) when empty
+	var rd any
+	if reviewDecision != "" {
+		rd = reviewDecision
+	}
+
+	return map[string]any{
+		"data": map[string]any{
+			"repository": map[string]any{
+				"pullRequest": map[string]any{
+					"reviewDecision": rd,
+					"commits": map[string]any{
+						"nodes": []map[string]any{
+							{
+								"commit": map[string]any{
+									"statusCheckRollup": map[string]any{
+										"contexts": map[string]any{
+											"totalCount": len(nodes),
+											"nodes":      nodes,
+										},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+}
+
+// graphqlState converts REST status state to GraphQL StatusState enum.
+func graphqlState(restState string) string {
+	switch restState {
+	case "success":
+		return "SUCCESS"
+	case "pending":
+		return "PENDING"
+	case "failure":
+		return "FAILURE"
+	case "error":
+		return "ERROR"
+	default:
+		return fmt.Sprintf("UNKNOWN_%s", restState)
+	}
+}
+
+// graphqlCheckStatus converts REST check run status to GraphQL CheckStatusState.
+func graphqlCheckStatus(restStatus string) string {
+	switch restStatus {
+	case "completed":
+		return "COMPLETED"
+	case "in_progress":
+		return "IN_PROGRESS"
+	case "queued":
+		return "QUEUED"
+	default:
+		return fmt.Sprintf("UNKNOWN_%s", restStatus)
+	}
+}
+
+// graphqlConclusion converts REST conclusion to GraphQL CheckConclusionState.
+func graphqlConclusion(restConclusion string) string {
+	switch restConclusion {
+	case "success":
+		return "SUCCESS"
+	case "failure":
+		return "FAILURE"
+	case "neutral":
+		return "NEUTRAL"
+	case "skipped":
+		return "SKIPPED"
+	case "cancelled":
+		return "CANCELLED"
+	default:
+		return fmt.Sprintf("UNKNOWN_%s", restConclusion)
+	}
 }
 
 // makePR builds a minimal PullRequest with the given mergeable state and flag.
@@ -215,14 +350,36 @@ func TestBypass_BlockedWithNoChecksAtAll_ReturnsFalse(t *testing.T) {
 }
 
 // fakeGitHubAPIWithTotals is like fakeGitHubAPI but allows overriding the
-// reported total counts for statuses and check runs, simulating truncated
-// (paginated) responses when total > len(items).
+// reported total counts, simulating truncated (paginated) responses.
+// Works for both GraphQL (overrides totalCount) and REST (overrides totals).
 func fakeGitHubAPIWithTotals(t *testing.T, pr *gh.PullRequest, issue *gh.Issue, statuses []*gh.RepoStatus, statusTotal int, checkRuns []*gh.CheckRun, checkRunTotal int) http.Handler {
 	t.Helper()
+	// For GraphQL, the total is the combined count of all contexts
+	graphQLTotal := statusTotal + checkRunTotal
+	if statusTotal == len(statuses) && checkRunTotal == len(checkRuns) {
+		graphQLTotal = len(statuses) + len(checkRuns)
+	}
+
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 
 		switch {
+		case r.Method == "POST" && r.URL.Path == "/graphql":
+			body, _ := io.ReadAll(r.Body)
+			_ = body
+			resp := buildGraphQLResponse(statuses, checkRuns, "")
+			// Override the totalCount to simulate truncation
+			data := resp["data"].(map[string]any)
+			repo := data["repository"].(map[string]any)
+			prData := repo["pullRequest"].(map[string]any)
+			commits := prData["commits"].(map[string]any)
+			nodes := commits["nodes"].([]map[string]any)
+			commit := nodes[0]["commit"].(map[string]any)
+			rollup := commit["statusCheckRollup"].(map[string]any)
+			contexts := rollup["contexts"].(map[string]any)
+			contexts["totalCount"] = graphQLTotal
+			json.NewEncoder(w).Encode(resp)
+
 		case r.Method == "GET" && r.URL.Path == "/repos/testowner/testrepo/issues/1":
 			json.NewEncoder(w).Encode(issue)
 
@@ -289,6 +446,81 @@ func TestBypass_TruncatedCheckRuns_ReturnsFalse(t *testing.T) {
 	assert.NoError(t, err)
 	assert.False(t, result,
 		"should refuse to bypass when check run results are truncated")
+}
+
+// TestBypass_BlockedByReviewRequirement_BailsEarly verifies that the GraphQL
+// path returns false immediately when reviewDecision is REVIEW_REQUIRED,
+// without needing to inspect individual checks.
+func TestBypass_BlockedByReviewRequirement_BailsEarly(t *testing.T) {
+	pr := makePR("blocked", false)
+	statuses := []*gh.RepoStatus{
+		{Context: gh.String("digger/apply"), State: gh.String("pending")},
+		{Context: gh.String("ci/build"), State: gh.String("success")},
+	}
+	svc, server := newTestGithubService(t,
+		fakeGitHubAPIFull(t, pr, makeIssue(), statuses, nil, "REVIEW_REQUIRED"))
+	defer server.Close()
+
+	result, err := svc.IsMergeableForApply(1)
+	assert.NoError(t, err)
+	assert.False(t, result,
+		"should bail early when reviews are required — block is not from checks")
+}
+
+// TestBypass_BlockedByChangesRequested_BailsEarly verifies early bail when a
+// reviewer has requested changes.
+func TestBypass_BlockedByChangesRequested_BailsEarly(t *testing.T) {
+	pr := makePR("blocked", false)
+	statuses := []*gh.RepoStatus{
+		{Context: gh.String("digger/apply"), State: gh.String("pending")},
+	}
+	svc, server := newTestGithubService(t,
+		fakeGitHubAPIFull(t, pr, makeIssue(), statuses, nil, "CHANGES_REQUESTED"))
+	defer server.Close()
+
+	result, err := svc.IsMergeableForApply(1)
+	assert.NoError(t, err)
+	assert.False(t, result,
+		"should bail early when changes are requested")
+}
+
+// TestBypass_ApprovedReviewWithDiggerApplyBlocking_ReturnsTrue verifies the
+// full happy path: reviews are approved, digger/apply is the only blocker.
+func TestBypass_ApprovedReviewWithDiggerApplyBlocking_ReturnsTrue(t *testing.T) {
+	pr := makePR("blocked", false)
+	statuses := []*gh.RepoStatus{
+		{Context: gh.String("digger/apply"), State: gh.String("pending")},
+		{Context: gh.String("digger/plan"), State: gh.String("success")},
+	}
+	svc, server := newTestGithubService(t,
+		fakeGitHubAPIFull(t, pr, makeIssue(), statuses, nil, "APPROVED"))
+	defer server.Close()
+
+	result, err := svc.IsMergeableForApply(1)
+	assert.NoError(t, err)
+	assert.True(t, result,
+		"should bypass when reviews are approved and digger/apply is the only blocker")
+}
+
+// TestBypass_NoToken_FallsBackToREST verifies that when Token is empty, the
+// REST fallback path is used and still produces correct results.
+func TestBypass_NoToken_FallsBackToREST(t *testing.T) {
+	pr := makePR("blocked", false)
+	statuses := []*gh.RepoStatus{
+		{Context: gh.String("digger/apply"), State: gh.String("pending")},
+		{Context: gh.String("digger/plan"), State: gh.String("success")},
+	}
+	checkRuns := []*gh.CheckRun{
+		{Name: gh.String("ci/build"), Status: gh.String("completed"), Conclusion: gh.String("success")},
+	}
+	svc, server := newTestGithubServiceNoToken(t,
+		fakeGitHubAPI(t, pr, makeIssue(), statuses, checkRuns))
+	defer server.Close()
+
+	result, err := svc.IsMergeableForApply(1)
+	assert.NoError(t, err)
+	assert.True(t, result,
+		"REST fallback should still bypass when digger/apply is the only blocker")
 }
 
 func TestIsMergeableForApply_FallsBackForNonGithub(t *testing.T) {
