@@ -33,19 +33,21 @@ func newTestGithubService(t *testing.T, handler http.Handler) (GithubService, *h
 // endpoints the bypass logic calls: the GraphQL endpoint, Issues.Get (used by
 // IsPullRequest), and PullRequests.Get.
 func fakeGitHubAPI(t *testing.T, pr *gh.PullRequest, issue *gh.Issue, statuses []*gh.RepoStatus, checkRuns []*gh.CheckRun) http.Handler {
-	return fakeGitHubAPIFull(t, pr, issue, statuses, checkRuns, "")
+	return fakeGitHubAPIFull(t, pr, issue, statuses, checkRuns, "", -1)
 }
 
-// fakeGitHubAPIFull is like fakeGitHubAPI but accepts a reviewDecision for the
-// GraphQL response (empty string = null, i.e. no review rule configured).
-func fakeGitHubAPIFull(t *testing.T, pr *gh.PullRequest, issue *gh.Issue, statuses []*gh.RepoStatus, checkRuns []*gh.CheckRun, reviewDecision string) http.Handler {
+// fakeGitHubAPIFull is like fakeGitHubAPI but accepts a reviewDecision for
+// the GraphQL response (empty string = null, i.e. no review rule configured)
+// and a graphQLTotal override on the contexts connection (pass -1 to auto-use
+// the node count; larger values simulate a truncated/paginated response).
+func fakeGitHubAPIFull(t *testing.T, pr *gh.PullRequest, issue *gh.Issue, statuses []*gh.RepoStatus, checkRuns []*gh.CheckRun, reviewDecision string, graphQLTotal int) http.Handler {
 	t.Helper()
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 
 		switch {
 		case r.Method == "POST" && r.URL.Path == "/graphql":
-			resp := buildGraphQLResponse(statuses, checkRuns, reviewDecision)
+			resp := buildGraphQLResponse(statuses, checkRuns, reviewDecision, graphQLTotal)
 			json.NewEncoder(w).Encode(resp)
 
 		// IsPullRequest calls Issues.Get
@@ -64,19 +66,10 @@ func fakeGitHubAPIFull(t *testing.T, pr *gh.PullRequest, issue *gh.Issue, status
 }
 
 // buildGraphQLResponse constructs a canned GraphQL response matching the
-// bypassQuery shape from the same test data used for REST endpoints. The
-// reported totalCount equals the number of emitted nodes — use
-// buildGraphQLResponseWithTotalCount to simulate pagination truncation.
-func buildGraphQLResponse(statuses []*gh.RepoStatus, checkRuns []*gh.CheckRun, reviewDecision string) map[string]any {
-	return buildGraphQLResponseWithTotalCount(statuses, checkRuns, reviewDecision, -1)
-}
-
-// buildGraphQLResponseWithTotalCount is like buildGraphQLResponse but lets
-// tests override the reported totalCount on the contexts connection. A
-// totalCount greater than len(nodes) simulates a truncated (paginated)
-// response where GitHub reported more contexts than it returned. Pass -1
-// to auto-use len(nodes) (i.e. no truncation).
-func buildGraphQLResponseWithTotalCount(statuses []*gh.RepoStatus, checkRuns []*gh.CheckRun, reviewDecision string, totalCount int) map[string]any {
+// bypassQuery shape from the same test data used for REST endpoints. Pass
+// totalCount=-1 to auto-use len(nodes) (no truncation); a value greater
+// than len(nodes) simulates a truncated (paginated) response.
+func buildGraphQLResponse(statuses []*gh.RepoStatus, checkRuns []*gh.CheckRun, reviewDecision string, totalCount int) map[string]any {
 	// Build context nodes from statuses and check runs
 	var nodes []map[string]string
 	for _, s := range statuses {
@@ -356,32 +349,6 @@ func TestBypass_BlockedWithNoChecksAtAll_ReturnsFalse(t *testing.T) {
 			"is caused by non-check requirements")
 }
 
-// fakeGitHubAPIWithTotals is like fakeGitHubAPI but overrides the GraphQL
-// totalCount, letting tests simulate a truncated (paginated) response where
-// TotalCount > len(Contexts).
-func fakeGitHubAPIWithTotals(t *testing.T, pr *gh.PullRequest, issue *gh.Issue, statuses []*gh.RepoStatus, checkRuns []*gh.CheckRun, graphQLTotal int) http.Handler {
-	t.Helper()
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-
-		switch {
-		case r.Method == "POST" && r.URL.Path == "/graphql":
-			resp := buildGraphQLResponseWithTotalCount(statuses, checkRuns, "", graphQLTotal)
-			json.NewEncoder(w).Encode(resp)
-
-		case r.Method == "GET" && r.URL.Path == "/repos/testowner/testrepo/issues/1":
-			json.NewEncoder(w).Encode(issue)
-
-		case r.Method == "GET" && r.URL.Path == "/repos/testowner/testrepo/pulls/1":
-			json.NewEncoder(w).Encode(pr)
-
-		default:
-			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
-			w.WriteHeader(http.StatusNotFound)
-		}
-	})
-}
-
 // TestBypass_TruncatedStatuses_ReturnsError verifies that the bypass refuses
 // to fire when the combined status response is truncated (more statuses exist
 // than were returned) and surfaces the truncation as an actionable error.
@@ -395,7 +362,7 @@ func TestBypass_TruncatedStatuses_ReturnsError(t *testing.T) {
 	}
 	// Report totalCount=5 but only return 1 context — simulates pagination truncation
 	svc, server := newTestGithubService(t,
-		fakeGitHubAPIWithTotals(t, pr, makeIssue(), statuses, nil, 5))
+		fakeGitHubAPIFull(t, pr, makeIssue(), statuses, nil, "", 5))
 	defer server.Close()
 
 	result, err := ci.IsMergeableForApply(svc, 1, []string{"digger/apply"})
@@ -421,7 +388,7 @@ func TestBypass_TruncatedCheckRuns_ReturnsError(t *testing.T) {
 	// Return 2 context nodes but report totalCount=151 — simulates truncation
 	// when both statuses and check runs spill past a single page.
 	svc, server := newTestGithubService(t,
-		fakeGitHubAPIWithTotals(t, pr, makeIssue(), statuses, checkRuns, 151))
+		fakeGitHubAPIFull(t, pr, makeIssue(), statuses, checkRuns, "", 151))
 	defer server.Close()
 
 	result, err := ci.IsMergeableForApply(svc, 1, []string{"digger/apply"})
@@ -443,7 +410,7 @@ func TestBypass_BlockedByReviewRequirement_BailsEarly(t *testing.T) {
 		{Context: gh.String("ci/build"), State: gh.String("success")},
 	}
 	svc, server := newTestGithubService(t,
-		fakeGitHubAPIFull(t, pr, makeIssue(), statuses, nil, "REVIEW_REQUIRED"))
+		fakeGitHubAPIFull(t, pr, makeIssue(), statuses, nil, "REVIEW_REQUIRED", -1))
 	defer server.Close()
 
 	result, err := ci.IsMergeableForApply(svc, 1, []string{"digger/apply"})
@@ -460,7 +427,7 @@ func TestBypass_BlockedByChangesRequested_BailsEarly(t *testing.T) {
 		{Context: gh.String("digger/apply"), State: gh.String("pending")},
 	}
 	svc, server := newTestGithubService(t,
-		fakeGitHubAPIFull(t, pr, makeIssue(), statuses, nil, "CHANGES_REQUESTED"))
+		fakeGitHubAPIFull(t, pr, makeIssue(), statuses, nil, "CHANGES_REQUESTED", -1))
 	defer server.Close()
 
 	result, err := ci.IsMergeableForApply(svc, 1, []string{"digger/apply"})
@@ -479,7 +446,7 @@ func TestBypass_BlockedByUnknownReviewDecision_BailsEarly(t *testing.T) {
 		{Context: gh.String("digger/apply"), State: gh.String("pending")},
 	}
 	svc, server := newTestGithubService(t,
-		fakeGitHubAPIFull(t, pr, makeIssue(), statuses, nil, "SOME_FUTURE_STATE"))
+		fakeGitHubAPIFull(t, pr, makeIssue(), statuses, nil, "SOME_FUTURE_STATE", -1))
 	defer server.Close()
 
 	result, err := ci.IsMergeableForApply(svc, 1, []string{"digger/apply"})
@@ -497,7 +464,7 @@ func TestBypass_ApprovedReviewWithDiggerApplyBlocking_ReturnsTrue(t *testing.T) 
 		{Context: gh.String("digger/plan"), State: gh.String("success")},
 	}
 	svc, server := newTestGithubService(t,
-		fakeGitHubAPIFull(t, pr, makeIssue(), statuses, nil, "APPROVED"))
+		fakeGitHubAPIFull(t, pr, makeIssue(), statuses, nil, "APPROVED", -1))
 	defer server.Close()
 
 	result, err := ci.IsMergeableForApply(svc, 1, []string{"digger/apply"})
