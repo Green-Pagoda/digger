@@ -400,77 +400,38 @@ func TestBypass_TruncatedCheckRuns_ReturnsError(t *testing.T) {
 		"should refuse to bypass when check run results are truncated")
 }
 
-// TestBypass_BlockedByReviewRequirement_BailsEarly verifies that the GraphQL
-// path returns false immediately when reviewDecision is REVIEW_REQUIRED,
-// without needing to inspect individual checks.
-func TestBypass_BlockedByReviewRequirement_BailsEarly(t *testing.T) {
-	pr := makePR("blocked", false)
-	statuses := []*gh.RepoStatus{
-		{Context: gh.String("digger/apply"), State: gh.String("pending")},
-		{Context: gh.String("ci/build"), State: gh.String("success")},
+// TestBypass_ReviewDecisionAllowlist verifies that only APPROVED and the
+// empty string (no review policy) allow the bypass to fire. Every other
+// value — including unknown future GitHub enum additions — must fail
+// closed. The check fixture is fixed (digger/apply pending + one passing
+// context) so the only variable is the review decision.
+func TestBypass_ReviewDecisionAllowlist(t *testing.T) {
+	cases := []struct {
+		decision string
+		want     bool
+		reason   string
+	}{
+		{"REVIEW_REQUIRED", false, "reviews required — block is not from checks"},
+		{"CHANGES_REQUESTED", false, "changes requested"},
+		{"SOME_FUTURE_STATE", false, "unknown reviewDecision must fail closed (allowlist)"},
+		{"APPROVED", true, "reviews approved and digger/apply is the only blocker"},
 	}
-	svc, server := newTestGithubService(t,
-		fakeGitHubAPIFull(t, pr, makeIssue(), statuses, nil, "REVIEW_REQUIRED", -1))
-	defer server.Close()
+	for _, c := range cases {
+		t.Run(c.decision, func(t *testing.T) {
+			pr := makePR("blocked", false)
+			statuses := []*gh.RepoStatus{
+				{Context: gh.String("digger/apply"), State: gh.String("pending")},
+				{Context: gh.String("ci/build"), State: gh.String("success")},
+			}
+			svc, server := newTestGithubService(t,
+				fakeGitHubAPIFull(t, pr, makeIssue(), statuses, nil, c.decision, -1))
+			defer server.Close()
 
-	result, err := ci.IsMergeableForApply(svc, 1, []string{"digger/apply"})
-	assert.NoError(t, err)
-	assert.False(t, result,
-		"should bail early when reviews are required — block is not from checks")
-}
-
-// TestBypass_BlockedByChangesRequested_BailsEarly verifies early bail when a
-// reviewer has requested changes.
-func TestBypass_BlockedByChangesRequested_BailsEarly(t *testing.T) {
-	pr := makePR("blocked", false)
-	statuses := []*gh.RepoStatus{
-		{Context: gh.String("digger/apply"), State: gh.String("pending")},
+			result, err := ci.IsMergeableForApply(svc, 1, []string{"digger/apply"})
+			assert.NoError(t, err)
+			assert.Equal(t, c.want, result, c.reason)
+		})
 	}
-	svc, server := newTestGithubService(t,
-		fakeGitHubAPIFull(t, pr, makeIssue(), statuses, nil, "CHANGES_REQUESTED", -1))
-	defer server.Close()
-
-	result, err := ci.IsMergeableForApply(svc, 1, []string{"digger/apply"})
-	assert.NoError(t, err)
-	assert.False(t, result,
-		"should bail early when changes are requested")
-}
-
-// TestBypass_BlockedByUnknownReviewDecision_BailsEarly verifies the
-// allowlist semantics: any reviewDecision value other than APPROVED or
-// empty is treated as blocking, so a future GitHub enum addition (e.g.
-// DISMISSED_STALE) fails closed rather than silently bypassing.
-func TestBypass_BlockedByUnknownReviewDecision_BailsEarly(t *testing.T) {
-	pr := makePR("blocked", false)
-	statuses := []*gh.RepoStatus{
-		{Context: gh.String("digger/apply"), State: gh.String("pending")},
-	}
-	svc, server := newTestGithubService(t,
-		fakeGitHubAPIFull(t, pr, makeIssue(), statuses, nil, "SOME_FUTURE_STATE", -1))
-	defer server.Close()
-
-	result, err := ci.IsMergeableForApply(svc, 1, []string{"digger/apply"})
-	assert.NoError(t, err)
-	assert.False(t, result,
-		"should treat unknown reviewDecision as blocking (fail-closed allowlist)")
-}
-
-// TestBypass_ApprovedReviewWithDiggerApplyBlocking_ReturnsTrue verifies the
-// full happy path: reviews are approved, digger/apply is the only blocker.
-func TestBypass_ApprovedReviewWithDiggerApplyBlocking_ReturnsTrue(t *testing.T) {
-	pr := makePR("blocked", false)
-	statuses := []*gh.RepoStatus{
-		{Context: gh.String("digger/apply"), State: gh.String("pending")},
-		{Context: gh.String("digger/plan"), State: gh.String("success")},
-	}
-	svc, server := newTestGithubService(t,
-		fakeGitHubAPIFull(t, pr, makeIssue(), statuses, nil, "APPROVED", -1))
-	defer server.Close()
-
-	result, err := ci.IsMergeableForApply(svc, 1, []string{"digger/apply"})
-	assert.NoError(t, err)
-	assert.True(t, result,
-		"should bypass when reviews are approved and digger/apply is the only blocker")
 }
 
 // TestBypass_EmptyToken_ReturnsError verifies that the bypass fails fast with
