@@ -41,14 +41,14 @@ func CheckApplyRequirements(ghService ci.PullRequestService, impactedProjects []
 	}
 	approvals, err := ghService.GetApprovals(prNumber)
 	if err != nil {
-		slog.Error("Error getting approvals", "prNumber", prNumber)
-		return fmt.Errorf("error getting approvals")
+		slog.Error("Error getting approvals", "prNumber", prNumber, "error", err)
+		return fmt.Errorf("error getting approvals: %w", err)
 	}
 	isApproved := len(approvals) > 0
 	isDiverged, err := ghService.IsDivergedFromBranch(sourceBranch, targetBranch)
 	if err != nil {
-		slog.Error("Error checking if PR is diverged", "prNumber", prNumber)
-		return fmt.Errorf("error checking if PR is diverged")
+		slog.Error("Error checking if PR is diverged", "prNumber", prNumber, "error", err)
+		return fmt.Errorf("error checking if PR is diverged: %w", err)
 	}
 	for _, proj := range impactedProjects {
 		for _, req := range proj.ApplyRequirements {
