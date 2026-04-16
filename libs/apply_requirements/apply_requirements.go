@@ -47,7 +47,7 @@ func IsMergeableForApply(svc ci.PullRequestService, prNumber int, selfBlockingCh
 	}
 	state, err := inspector.InspectMergeability(prNumber)
 	if err != nil {
-		return false, err
+		return false, fmt.Errorf("InspectMergeability for PR %d: %w", prNumber, err)
 	}
 	if state.Mergeable {
 		return true, nil
@@ -84,7 +84,8 @@ func IsMergeableForApply(svc ci.PullRequestService, prNumber int, selfBlockingCh
 func IgnoreMergeabilityForProject(project digger_config.Project, jobs []scheduler.Job) bool {
 	job, err := scheduler.JobForProjectName(jobs, project.Name)
 	if err != nil {
-		slog.Warn("could not find job for mergeability ignore check, skipping this check and returning false")
+		slog.Warn("could not find job for mergeability ignore check, returning false",
+			"project", project.Name, "error", err)
 		return false
 	}
 	return job.SkipMergeCheck
