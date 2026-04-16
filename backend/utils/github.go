@@ -164,7 +164,7 @@ func GetGithubService(gh GithubClientProvider, installationId int64, repoFullNam
 		Client:   ghClient,
 		RepoName: repoName,
 		Owner:    repoOwner,
-		Token:    tokenStr,
+		Token:    github2.Token(tokenStr),
 	}
 
 	slog.Debug("Created GitHub service",

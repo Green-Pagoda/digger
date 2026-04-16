@@ -34,7 +34,7 @@ func (_ GithubServiceProviderBasic) NewService(ghToken string, repoName string, 
 		Client:   client,
 		RepoName: repoName,
 		Owner:    owner,
-		Token:    ghToken,
+		Token:    Token(ghToken),
 	}, nil
 }
 
@@ -42,7 +42,9 @@ type GithubService struct {
 	Client   *github.Client
 	RepoName string
 	Owner    string
-	Token    string // required for the digger/apply bypass GraphQL query; see IsMergeableForApply
+	// Token is required for the digger/apply bypass GraphQL query; see
+	// IsMergeableForApply. Wrapped so accidental formatting cannot leak it.
+	Token Token
 }
 
 func (svc GithubService) GetUserTeams(organisation string, user string) ([]string, error) {
@@ -757,7 +759,7 @@ func (svc GithubService) IsMergeableForApply(prNumber int) (bool, error) {
 // waste work iterating checks when the block is non-check in origin.
 func (svc GithubService) bypassViaGraphQL(prNumber int) (bool, error) {
 	baseURL := svc.Client.BaseURL.String()
-	result, err := queryBypassGraphQL(context.Background(), baseURL, svc.Token, svc.Owner, svc.RepoName, prNumber)
+	result, err := queryBypassGraphQL(context.Background(), baseURL, string(svc.Token), svc.Owner, svc.RepoName, prNumber)
 	if err != nil {
 		return false, fmt.Errorf("error querying GraphQL for bypass check: %v", err)
 	}

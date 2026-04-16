@@ -49,7 +49,7 @@ func GetGithubService(gh utils.GithubClientProvider, installationId int64, repoF
 		Client:   ghClient,
 		RepoName: repoName,
 		Owner:    repoOwner,
-		Token:    tokenStr,
+		Token:    github2.Token(tokenStr),
 	}
 
 	return &ghService, token, nil
