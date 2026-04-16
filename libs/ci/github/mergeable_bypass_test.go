@@ -430,6 +430,25 @@ func TestBypass_BlockedByChangesRequested_BailsEarly(t *testing.T) {
 		"should bail early when changes are requested")
 }
 
+// TestBypass_BlockedByUnknownReviewDecision_BailsEarly verifies the
+// allowlist semantics: any reviewDecision value other than APPROVED or
+// empty is treated as blocking, so a future GitHub enum addition (e.g.
+// DISMISSED_STALE) fails closed rather than silently bypassing.
+func TestBypass_BlockedByUnknownReviewDecision_BailsEarly(t *testing.T) {
+	pr := makePR("blocked", false)
+	statuses := []*gh.RepoStatus{
+		{Context: gh.String("digger/apply"), State: gh.String("pending")},
+	}
+	svc, server := newTestGithubService(t,
+		fakeGitHubAPIFull(t, pr, makeIssue(), statuses, nil, "SOME_FUTURE_STATE"))
+	defer server.Close()
+
+	result, err := ci.IsMergeableForApply(svc, 1, []string{"digger/apply"})
+	assert.NoError(t, err)
+	assert.False(t, result,
+		"should treat unknown reviewDecision as blocking (fail-closed allowlist)")
+}
+
 // TestBypass_ApprovedReviewWithDiggerApplyBlocking_ReturnsTrue verifies the
 // full happy path: reviews are approved, digger/apply is the only blocker.
 func TestBypass_ApprovedReviewWithDiggerApplyBlocking_ReturnsTrue(t *testing.T) {

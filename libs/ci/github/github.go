@@ -757,9 +757,14 @@ func (svc GithubService) InspectMergeability(prNumber int) (*ci.MergeabilityStat
 		return nil, fmt.Errorf("error querying GraphQL for mergeability inspection: %v", err)
 	}
 
+	// ReviewDecision allowlist: treat any non-APPROVED, non-empty value as
+	// blocking. An empty decision means no review policy is configured;
+	// anything else (REVIEW_REQUIRED, CHANGES_REQUESTED, future enum
+	// values) cannot be resolved by re-running a status check, so the
+	// bypass must refuse.
 	state := &ci.MergeabilityState{
 		Blocked:         true,
-		ReviewsBlocking: result.ReviewDecision == "REVIEW_REQUIRED" || result.ReviewDecision == "CHANGES_REQUESTED",
+		ReviewsBlocking: result.ReviewDecision != "" && result.ReviewDecision != "APPROVED",
 	}
 
 	// Truncation guard: leave FailingChecks empty so the caller's predicate
