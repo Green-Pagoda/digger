@@ -130,6 +130,23 @@ type bypassCheckResult struct {
 	TotalCount     int
 }
 
+// errorBodyMaxBytes caps the response body length we include in error
+// messages. GHE proxies (Varnish, Fastly) can return multi-KB HTML pages on
+// 4xx/5xx responses; propagating those verbatim through error wrapping bloats
+// logs and Sentry payloads without adding diagnostic value beyond the first
+// few hundred bytes.
+const errorBodyMaxBytes = 512
+
+// truncateForError returns body as a string, capped at errorBodyMaxBytes with
+// an explicit suffix when truncation occurred so readers know something was
+// cut.
+func truncateForError(body []byte) string {
+	if len(body) <= errorBodyMaxBytes {
+		return string(body)
+	}
+	return string(body[:errorBodyMaxBytes]) + "...[truncated]"
+}
+
 // graphqlBaseURL derives the GraphQL endpoint from the REST client's base URL.
 // For github.com it returns https://api.github.com/graphql. For GHE or
 // httptest servers it appends /graphql to the existing base.
@@ -185,7 +202,8 @@ func queryBypassGraphQL(ctx context.Context, restBaseURL, token, owner, repo str
 		return nil, fmt.Errorf("error reading GraphQL response: %v", err)
 	}
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("GraphQL request failed with status %d: %s", resp.StatusCode, string(respBody))
+		return nil, fmt.Errorf("GraphQL request failed with status %d: %s",
+			resp.StatusCode, truncateForError(respBody))
 	}
 
 	var gqlResp graphqlResponse

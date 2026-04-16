@@ -480,6 +480,46 @@ func TestIsMergeableForApply_FallsBackForNonGithub(t *testing.T) {
 	assert.True(t, result, "should fall back to IsMergeable for non-GitHub providers")
 }
 
+// TestBypass_GraphQLNon200_TruncatesErrorBody verifies that a large upstream
+// error page (as GHE edge proxies can return) is capped in the wrapped error
+// rather than propagated verbatim through logs and Sentry.
+func TestBypass_GraphQLNon200_TruncatesErrorBody(t *testing.T) {
+	pr := makePR("blocked", false)
+	hugeBody := make([]byte, 4096)
+	for i := range hugeBody {
+		hugeBody[i] = 'X'
+	}
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/graphql":
+			w.WriteHeader(http.StatusBadGateway)
+			w.Write(hugeBody)
+		case r.URL.Path == "/repos/testowner/testrepo/issues/1":
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(makeIssue())
+		case r.URL.Path == "/repos/testowner/testrepo/pulls/1":
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(pr)
+		default:
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+		}
+	})
+	svc, server := newTestGithubService(t, handler)
+	defer server.Close()
+
+	result, err := svc.IsMergeableForApply(1)
+	assert.Error(t, err)
+	assert.False(t, result)
+	assert.Contains(t, err.Error(), "502", "error should name the status code")
+	assert.Contains(t, err.Error(), "[truncated]",
+		"error should signal that the body was truncated")
+	// Cap check: 512 body bytes + ~80 bytes of wrapping prefix. Well under 4096.
+	assert.Less(t, len(err.Error()), 1024,
+		"truncated error message should not carry the full 4KB body")
+}
+
 // TestBypass_GraphQLTimeout_ReturnsError verifies that a hung GitHub endpoint
 // is bounded by bypassHTTPClient's timeout rather than wedging apply forever.
 // The feature exists to unblock apply; a missing timeout would be strictly
