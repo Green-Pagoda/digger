@@ -674,9 +674,9 @@ func TestBypass_GraphQLNon200_TruncatesErrorBody(t *testing.T) {
 }
 
 // TestBypass_GraphQLTimeout_ReturnsError verifies that a hung GitHub endpoint
-// is bounded by bypassHTTPClient's timeout rather than wedging apply forever.
-// The feature exists to unblock apply; a missing timeout would be strictly
-// worse than the chicken-and-egg it is fixing.
+// is bounded by the injected HTTPClient's timeout rather than wedging apply
+// forever. The feature exists to unblock apply; a missing timeout would be
+// strictly worse than the chicken-and-egg it is fixing.
 func TestBypass_GraphQLTimeout_ReturnsError(t *testing.T) {
 	pr := makePR("blocked", false)
 	// Handler that blocks past the test's timeout on the GraphQL endpoint but
@@ -700,10 +700,9 @@ func TestBypass_GraphQLTimeout_ReturnsError(t *testing.T) {
 	svc, server := newTestGithubService(t, handler)
 	defer server.Close()
 
-	// Swap in a short-timeout client for this test, restore after.
-	original := bypassHTTPClient
-	bypassHTTPClient = &http.Client{Timeout: 50 * time.Millisecond}
-	defer func() { bypassHTTPClient = original }()
+	// Inject a short-timeout client on the service itself — no shared global
+	// to race on if this test is ever run in parallel with others.
+	svc.HTTPClient = &http.Client{Timeout: 50 * time.Millisecond}
 
 	result, err := ci.IsMergeableForApply(svc, 1, []string{"digger/apply"})
 	assert.Error(t, err, "expected timeout error from slow GraphQL endpoint")

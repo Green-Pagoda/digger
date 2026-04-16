@@ -19,9 +19,12 @@ import (
 // cancellation).
 const bypassHTTPTimeout = 30 * time.Second
 
-// bypassHTTPClient is a dedicated client so we do not share state with
-// http.DefaultClient (which has no timeout and can be mutated elsewhere).
-var bypassHTTPClient = &http.Client{Timeout: bypassHTTPTimeout}
+// defaultBypassHTTPClient is used when GithubService.HTTPClient is nil. It is
+// a dedicated client so we do not share state with http.DefaultClient (which
+// has no timeout and can be mutated elsewhere). Not mutated after init —
+// per-call overrides go through GithubService.HTTPClient so tests can inject
+// without racing on a shared global.
+var defaultBypassHTTPClient = &http.Client{Timeout: bypassHTTPTimeout}
 
 // bypassQuery is the GraphQL query used by InspectMergeability to fetch
 // reviewDecision and the status check rollup in a single call.
@@ -164,7 +167,10 @@ func graphqlBaseURL(restBaseURL string) string {
 
 // queryBypassGraphQL executes the bypass GraphQL query and returns the parsed
 // result. Returns an error if the request fails or the response is malformed.
-func queryBypassGraphQL(ctx context.Context, restBaseURL, token, owner, repo string, prNumber int) (*bypassCheckResult, error) {
+// The client argument is the HTTP client used for the request; callers
+// typically pass GithubService.HTTPClient (or defaultBypassHTTPClient when
+// that field is nil).
+func queryBypassGraphQL(ctx context.Context, client *http.Client, restBaseURL, token, owner, repo string, prNumber int) (*bypassCheckResult, error) {
 	url := graphqlBaseURL(restBaseURL)
 
 	reqBody := graphqlRequest{
@@ -190,7 +196,7 @@ func queryBypassGraphQL(ctx context.Context, restBaseURL, token, owner, repo str
 	req.Header.Set("Authorization", "bearer "+token)
 	req.Header.Set("Content-Type", "application/json")
 
-	resp, err := bypassHTTPClient.Do(req)
+	resp, err := client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("error executing GraphQL request: %v", err)
 	}

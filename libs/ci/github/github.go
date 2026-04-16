@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"os"
 	"strconv"
 	"strings"
@@ -45,6 +46,11 @@ type GithubService struct {
 	// Token is required for the GraphQL query in InspectMergeability;
 	// wrapped so accidental formatting cannot leak it.
 	Token Token
+	// HTTPClient, when non-nil, is the HTTP client used for the GraphQL
+	// bypass request in InspectMergeability. Nil means use the package
+	// default (30s timeout). Exposed as a field so tests can inject a
+	// client with a shorter deadline without racing on a shared global.
+	HTTPClient *http.Client
 }
 
 func (svc GithubService) GetUserTeams(organisation string, user string) ([]string, error) {
@@ -742,7 +748,11 @@ func (svc GithubService) InspectMergeability(prNumber int) (ci.MergeabilityState
 		return ci.MergeabilityState{}, fmt.Errorf("digger/apply bypass requires GithubService.Token to be populated")
 	}
 
-	result, err := queryBypassGraphQL(context.Background(),
+	client := svc.HTTPClient
+	if client == nil {
+		client = defaultBypassHTTPClient
+	}
+	result, err := queryBypassGraphQL(context.Background(), client,
 		svc.Client.BaseURL.String(), string(svc.Token),
 		svc.Owner, svc.RepoName, prNumber)
 	if err != nil {
