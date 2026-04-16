@@ -480,6 +480,67 @@ func TestIsMergeableForApply_FallsBackForNonGithub(t *testing.T) {
 	assert.True(t, result, "should fall back to IsMergeable for non-GitHub providers")
 }
 
+// TestBypass_GraphQLMalformedJSON_ReturnsError verifies that an upstream
+// returning bytes that are not valid JSON (e.g. a gateway HTML page that
+// slipped past the status check, or a corrupted proxy response) surfaces an
+// error instead of silently treating the response as empty.
+func TestBypass_GraphQLMalformedJSON_ReturnsError(t *testing.T) {
+	pr := makePR("blocked", false)
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/graphql":
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte("{not-valid-json"))
+		case r.URL.Path == "/repos/testowner/testrepo/issues/1":
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(makeIssue())
+		case r.URL.Path == "/repos/testowner/testrepo/pulls/1":
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(pr)
+		default:
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+		}
+	})
+	svc, server := newTestGithubService(t, handler)
+	defer server.Close()
+
+	result, err := ci.IsMergeableForApply(svc, 1, []string{"digger/apply"})
+	assert.Error(t, err, "expected unmarshal error from malformed JSON")
+	assert.False(t, result)
+	assert.Contains(t, err.Error(), "unmarshal",
+		"error should identify the parse failure")
+}
+
+// TestBypass_NotAPullRequest_ReturnsMergeable verifies the IsPullRequest=false
+// path: an issue (not a PR) is "mergeable" for workflow purposes, since there
+// is nothing to block. Locks in InspectMergeability's contract for issues.
+func TestBypass_NotAPullRequest_ReturnsMergeable(t *testing.T) {
+	// An Issue without PullRequestLinks is the "not a PR" case.
+	bareIssue := &gh.Issue{}
+	pr := makePR("blocked", false) // PR fixture used only if path falls through
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.URL.Path == "/repos/testowner/testrepo/issues/1":
+			json.NewEncoder(w).Encode(bareIssue)
+		case r.URL.Path == "/repos/testowner/testrepo/pulls/1":
+			t.Errorf("PullRequests.Get should not be called for an issue")
+			json.NewEncoder(w).Encode(pr)
+		default:
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+		}
+	})
+	svc, server := newTestGithubService(t, handler)
+	defer server.Close()
+
+	result, err := ci.IsMergeableForApply(svc, 1, []string{"digger/apply"})
+	assert.NoError(t, err)
+	assert.True(t, result, "issues should be treated as mergeable (closable)")
+}
+
 // TestBypass_GraphQLMultipleErrors_AllSurfaced verifies that when the GraphQL
 // response carries multiple errors (one per failed field path, mixed
 // auth/rate-limit/deprecation signals), every message is included in the
