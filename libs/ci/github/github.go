@@ -725,34 +725,34 @@ func (svc GithubService) IsMergeable(prNumber int) (bool, error) {
 func (svc GithubService) InspectMergeability(prNumber int) (ci.MergeabilityState, error) {
 	isPullRequest, err := svc.IsPullRequest(prNumber)
 	if err != nil {
-		return ci.UnresolvableState(), fmt.Errorf("could not get pull request type: %v", err)
+		return ci.MergeabilityState{}, fmt.Errorf("could not get pull request type: %v", err)
 	}
 	if !isPullRequest {
 		// Issues are always "mergeable" (closable) for this workflow's purposes.
-		return ci.MergeableState(), nil
+		return ci.MergeabilityState{Mergeable: true}, nil
 	}
 
 	// Fetch the PR once and use that single snapshot for all decisions.
 	pr, _, err := svc.Client.PullRequests.Get(context.Background(), svc.Owner, svc.RepoName, prNumber)
 	if err != nil {
-		return ci.UnresolvableState(), fmt.Errorf("error getting pull request: %v", err)
+		return ci.MergeabilityState{}, fmt.Errorf("error getting pull request: %v", err)
 	}
 
 	if pr.GetMergeable() && isMergeableState(pr.GetMergeableState()) {
-		return ci.MergeableState(), nil
+		return ci.MergeabilityState{Mergeable: true}, nil
 	}
 
 	// Only the "blocked" state is potentially recoverable by re-running a
 	// check. Other non-mergeable states (dirty, behind, unknown) require
 	// human intervention regardless of any status check.
 	if strings.ToLower(pr.GetMergeableState()) != "blocked" {
-		return ci.UnresolvableState(), nil
+		return ci.MergeabilityState{}, nil
 	}
 
 	// Reaching the GraphQL inspector requires authentication; surface
 	// provisioning bugs rather than silently degrading.
 	if svc.Token == "" {
-		return ci.UnresolvableState(), fmt.Errorf("digger/apply bypass requires GithubService.Token to be populated")
+		return ci.MergeabilityState{}, fmt.Errorf("digger/apply bypass requires GithubService.Token to be populated")
 	}
 
 	client := svc.HTTPClient
@@ -763,7 +763,7 @@ func (svc GithubService) InspectMergeability(prNumber int) (ci.MergeabilityState
 		svc.Client.BaseURL.String(), svc.Token,
 		svc.Owner, svc.RepoName, prNumber)
 	if err != nil {
-		return ci.UnresolvableState(), fmt.Errorf("error querying GraphQL for mergeability inspection: %v", err)
+		return ci.MergeabilityState{}, fmt.Errorf("error querying GraphQL for mergeability inspection: %v", err)
 	}
 
 	// Truncation guard: signal to the caller that the full check list was
@@ -771,7 +771,12 @@ func (svc GithubService) InspectMergeability(prNumber int) (ci.MergeabilityState
 	// rather than "no failures" — otherwise a passing digger/apply plus a
 	// hidden failing check would let the bypass fire unsafely.
 	if result.TotalCount > len(result.Contexts) {
-		return ci.TruncatedState(len(result.Contexts), result.TotalCount), nil
+		return ci.MergeabilityState{
+			Blocked:       true,
+			Truncated:     true,
+			FetchedChecks: len(result.Contexts),
+			TotalChecks:   result.TotalCount,
+		}, nil
 	}
 
 	// ReviewDecision allowlist: treat any non-APPROVED, non-empty value as
@@ -787,7 +792,11 @@ func (svc GithubService) InspectMergeability(prNumber int) (ci.MergeabilityState
 			failing = append(failing, cc.DisplayName())
 		}
 	}
-	return ci.BlockedByChecksState(failing, reviewsBlocking), nil
+	return ci.MergeabilityState{
+		Blocked:         true,
+		ReviewsBlocking: reviewsBlocking,
+		FailingChecks:   failing,
+	}, nil
 }
 
 func (svc GithubService) IsMerged(prNumber int) (bool, error) {

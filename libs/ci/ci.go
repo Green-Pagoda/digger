@@ -74,51 +74,11 @@ type MergeabilityState struct {
 }
 
 // BlockedMergeInspector is an optional capability for providers that can
-// enumerate why a PR is blocked. Workflows (e.g. the digger/apply
-// chicken-and-egg bypass) use the result to decide whether the block is
-// something they can resolve themselves.
+// enumerate why a PR is blocked. The digger/apply chicken-and-egg bypass
+// uses the result to decide whether the block is a check the workflow can
+// resolve itself.
 type BlockedMergeInspector interface {
 	InspectMergeability(prNumber int) (MergeabilityState, error)
-}
-
-// MergeableState is the state for a PR that is already mergeable by the
-// platform's normal rules. Workflows can short-circuit on Mergeable without
-// inspecting other fields.
-func MergeableState() MergeabilityState {
-	return MergeabilityState{Mergeable: true}
-}
-
-// UnresolvableState is the state for a non-mergeable PR whose block is not
-// resolvable by re-running status checks (e.g. dirty, behind, unknown).
-// Callers should not bypass on this state.
-func UnresolvableState() MergeabilityState {
-	return MergeabilityState{}
-}
-
-// TruncatedState signals that the inspector could not enumerate the full
-// set of checks. Callers must treat this as "cannot determine" — never as
-// "no failures" — because a hidden failing check beyond the first page
-// would let the bypass fire unsafely.
-func TruncatedState(fetched, total int) MergeabilityState {
-	return MergeabilityState{
-		Blocked:       true,
-		Truncated:     true,
-		FetchedChecks: fetched,
-		TotalChecks:   total,
-	}
-}
-
-// BlockedByChecksState is the state for a blocked PR whose block is caused
-// (at least in part) by failing required status checks. Callers inspect
-// FailingChecks to decide whether every blocker is one they can resolve.
-// reviewsBlocking is true when review policy is also preventing the merge —
-// no status-check workflow can unblock that, so bypass must refuse.
-func BlockedByChecksState(failing []string, reviewsBlocking bool) MergeabilityState {
-	return MergeabilityState{
-		Blocked:         true,
-		ReviewsBlocking: reviewsBlocking,
-		FailingChecks:   failing,
-	}
 }
 
 // IsMergeableForApply returns true when the PR is mergeable, OR when the only
