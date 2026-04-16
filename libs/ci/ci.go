@@ -61,7 +61,7 @@ type MergeabilityState struct {
 // chicken-and-egg bypass) use the result to decide whether the block is
 // something they can resolve themselves.
 type BlockedMergeInspector interface {
-	InspectMergeability(prNumber int) (*MergeabilityState, error)
+	InspectMergeability(prNumber int) (MergeabilityState, error)
 }
 
 // IsMergeableForApply returns true when the PR is mergeable, OR when the only
