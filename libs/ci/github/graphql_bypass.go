@@ -211,7 +211,14 @@ func queryBypassGraphQL(ctx context.Context, restBaseURL, token, owner, repo str
 		return nil, fmt.Errorf("error unmarshaling GraphQL response: %v", err)
 	}
 	if len(gqlResp.Errors) > 0 {
-		return nil, fmt.Errorf("GraphQL error: %s", gqlResp.Errors[0].Message)
+		// GitHub GraphQL routinely returns multiple errors (one per failed
+		// field path, mixed auth/rate-limit/deprecation signals). Surfacing
+		// only Errors[0] sends operators chasing the wrong cause.
+		msgs := make([]string, len(gqlResp.Errors))
+		for i, e := range gqlResp.Errors {
+			msgs[i] = e.Message
+		}
+		return nil, fmt.Errorf("GraphQL error(s): %s", strings.Join(msgs, "; "))
 	}
 
 	result := &bypassCheckResult{

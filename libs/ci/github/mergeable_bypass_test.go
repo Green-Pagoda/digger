@@ -480,6 +480,45 @@ func TestIsMergeableForApply_FallsBackForNonGithub(t *testing.T) {
 	assert.True(t, result, "should fall back to IsMergeable for non-GitHub providers")
 }
 
+// TestBypass_GraphQLMultipleErrors_AllSurfaced verifies that when the GraphQL
+// response carries multiple errors (one per failed field path, mixed
+// auth/rate-limit/deprecation signals), every message is included in the
+// wrapped error rather than only the first.
+func TestBypass_GraphQLMultipleErrors_AllSurfaced(t *testing.T) {
+	pr := makePR("blocked", false)
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/graphql":
+			json.NewEncoder(w).Encode(map[string]any{
+				"data": nil,
+				"errors": []map[string]any{
+					{"message": "rate limit exceeded"},
+					{"message": "field statusCheckRollup is deprecated"},
+					{"message": "permission denied on reviewDecision"},
+				},
+			})
+		case r.URL.Path == "/repos/testowner/testrepo/issues/1":
+			json.NewEncoder(w).Encode(makeIssue())
+		case r.URL.Path == "/repos/testowner/testrepo/pulls/1":
+			json.NewEncoder(w).Encode(pr)
+		default:
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+		}
+	})
+	svc, server := newTestGithubService(t, handler)
+	defer server.Close()
+
+	result, err := svc.IsMergeableForApply(1)
+	assert.Error(t, err)
+	assert.False(t, result)
+	assert.Contains(t, err.Error(), "rate limit exceeded")
+	assert.Contains(t, err.Error(), "deprecated")
+	assert.Contains(t, err.Error(), "permission denied",
+		"all GraphQL errors must be surfaced, not just the first")
+}
+
 // TestBypass_GraphQLNon200_TruncatesErrorBody verifies that a large upstream
 // error page (as GHE edge proxies can return) is capped in the wrapped error
 // rather than propagated verbatim through logs and Sentry.
