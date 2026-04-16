@@ -1,7 +1,7 @@
 # Branch Haiku: feat/apply-mergability-bypass-1180
 
 ```
-One query now asks —
-reviews, checks, decision known;
-no wasted round trips.
+Dead fallback excised —
+one path, one truth, fail fast loud;
+silence hid the bug.
 ```
