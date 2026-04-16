@@ -40,3 +40,25 @@ type MergeabilityState struct {
 type BlockedMergeInspector interface {
 	InspectMergeability(prNumber int) (MergeabilityState, error)
 }
+
+// newBlockedState constructs a MergeabilityState for the blocked path,
+// enforcing the Blocked=true invariant callers of the blocked case must
+// always maintain. FailingChecks is defensively copied so the returned
+// state cannot be mutated through the caller's slice.
+//
+// The mergeable fast path is a plain struct literal (MergeabilityState{
+// Mergeable: true}) — it carries no correlated fields and a constructor
+// would only add noise. Zero-value error returns (MergeabilityState{})
+// similarly have no invariants to enforce.
+func newBlockedState(reviewsBlocking bool, failing []string, truncated bool) MergeabilityState {
+	var checks []string
+	if len(failing) > 0 {
+		checks = append(checks, failing...)
+	}
+	return MergeabilityState{
+		Blocked:         true,
+		ReviewsBlocking: reviewsBlocking,
+		FailingChecks:   checks,
+		Truncated:       truncated,
+	}
+}
