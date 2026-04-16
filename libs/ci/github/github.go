@@ -42,7 +42,7 @@ type GithubService struct {
 	Client   *github.Client
 	RepoName string
 	Owner    string
-	Token    string // needed for GraphQL bypass query; empty = fall back to REST
+	Token    string // required for the digger/apply bypass GraphQL query; see IsMergeableForApply
 }
 
 func (svc GithubService) GetUserTeams(organisation string, user string) ([]string, error) {
@@ -743,21 +743,18 @@ func (svc GithubService) IsMergeableForApply(prNumber int) (bool, error) {
 		return false, nil
 	}
 
-	// Use GraphQL when a token is available — single call replaces two REST
-	// calls and also returns reviewDecision for early bail on non-check blocks.
-	if svc.Token != "" {
-		return svc.bypassViaGraphQL(prNumber)
+	// The bypass requires a token to reach GitHub's GraphQL endpoint. All
+	// production constructors populate it; an empty value indicates a
+	// provisioning bug that must be surfaced, not silently degraded.
+	if svc.Token == "" {
+		return false, fmt.Errorf("digger/apply bypass requires GithubService.Token to be populated")
 	}
-
-	// REST fallback when no token is stored (backward compatibility).
-	slog.Debug("no token available for GraphQL bypass, falling back to REST",
-		"prNumber", prNumber)
-	return svc.bypassViaREST(pr, prNumber)
+	return svc.bypassViaGraphQL(prNumber)
 }
 
 // bypassViaGraphQL uses a single GraphQL query to check reviewDecision and
-// all status checks. It bails early if reviews are blocking, avoiding
-// unnecessary check iteration.
+// all status checks. It bails early if reviews are blocking, so we do not
+// waste work iterating checks when the block is non-check in origin.
 func (svc GithubService) bypassViaGraphQL(prNumber int) (bool, error) {
 	baseURL := svc.Client.BaseURL.String()
 	result, err := queryBypassGraphQL(context.Background(), baseURL, svc.Token, svc.Owner, svc.RepoName, prNumber)
@@ -805,74 +802,6 @@ func (svc GithubService) bypassViaGraphQL(prNumber int) (bool, error) {
 	}
 
 	slog.Info("PR is blocked only by digger/apply — bypassing mergeability check",
-		"prNumber", prNumber)
-	return true, nil
-}
-
-// bypassViaREST is the legacy path using two REST calls (GetCombinedStatus +
-// ListCheckRunsForRef). Used when Token is not available.
-func (svc GithubService) bypassViaREST(pr *github.PullRequest, prNumber int) (bool, error) {
-	headSha := pr.Head.GetSHA()
-	foundBlockingDiggerApply := false
-
-	combinedStatus, _, err := svc.Client.Repositories.GetCombinedStatus(context.Background(), svc.Owner, svc.RepoName, headSha, nil)
-	if err != nil {
-		return false, fmt.Errorf("error getting combined status: %v", err)
-	}
-	if combinedStatus.GetTotalCount() > len(combinedStatus.Statuses) {
-		slog.Warn("commit status results truncated — refusing to bypass",
-			"total", combinedStatus.GetTotalCount(), "fetched", len(combinedStatus.Statuses))
-		return false, nil
-	}
-	for _, status := range combinedStatus.Statuses {
-		if status.GetContext() == "digger/apply" {
-			if status.GetState() != "success" {
-				foundBlockingDiggerApply = true
-			}
-			continue
-		}
-		if status.GetState() != "success" {
-			slog.Debug("PR blocked by non-digger/apply commit status",
-				"context", status.GetContext(), "state", status.GetState())
-			return false, nil
-		}
-	}
-
-	checkRunResults, _, err := svc.Client.Checks.ListCheckRunsForRef(
-		context.Background(), svc.Owner, svc.RepoName, headSha,
-		&github.ListCheckRunsOptions{ListOptions: github.ListOptions{PerPage: 100}})
-	if err != nil {
-		return false, fmt.Errorf("error getting check runs: %v", err)
-	}
-	if checkRunResults.GetTotal() > len(checkRunResults.CheckRuns) {
-		slog.Warn("check run results truncated — refusing to bypass",
-			"total", checkRunResults.GetTotal(), "fetched", len(checkRunResults.CheckRuns))
-		return false, nil
-	}
-	for _, run := range checkRunResults.CheckRuns {
-		if run.GetName() == "digger/apply" {
-			conclusion := run.GetConclusion()
-			if conclusion != "success" && conclusion != "neutral" && conclusion != "skipped" {
-				foundBlockingDiggerApply = true
-			}
-			continue
-		}
-		conclusion := run.GetConclusion()
-		if conclusion != "success" && conclusion != "neutral" && conclusion != "skipped" {
-			slog.Debug("PR blocked by non-digger/apply check run",
-				"name", run.GetName(), "conclusion", conclusion, "status", run.GetStatus())
-			return false, nil
-		}
-	}
-
-	if !foundBlockingDiggerApply {
-		slog.Debug("PR is blocked but digger/apply is not pending/failing — "+
-			"block is caused by non-status-check requirements (reviews, signatures, etc.)",
-			"prNumber", prNumber)
-		return false, nil
-	}
-
-	slog.Info("PR is blocked only by digger/apply — bypassing mergeability check (REST path)",
 		"prNumber", prNumber)
 	return true, nil
 }
