@@ -1,8 +1,10 @@
 package github
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"strings"
 	"testing"
 
@@ -68,4 +70,41 @@ func TestToken_StringConversionStillUnwraps(t *testing.T) {
 	tok := Token(secret)
 	assert.Equal(t, secret, string(tok),
 		"explicit string(Token) must still expose the raw value")
+}
+
+// TestToken_RedactsAcrossSlogHandlers locks the redaction contract at the
+// slog layer. Handlers call LogValue() before delegating, so this test
+// covers both the text and JSON handlers that ship with the standard
+// library — the most realistic leak vector in a codebase with ~69 slog
+// call sites in the github package alone.
+func TestToken_RedactsAcrossSlogHandlers(t *testing.T) {
+	const secret = "ghp_supersecret_credential_value"
+	tok := Token(secret)
+	svc := GithubService{
+		Owner:    "testowner",
+		RepoName: "testrepo",
+		Token:    tok,
+	}
+
+	handlers := map[string]func(*bytes.Buffer) slog.Handler{
+		"text": func(buf *bytes.Buffer) slog.Handler { return slog.NewTextHandler(buf, nil) },
+		"json": func(buf *bytes.Buffer) slog.Handler { return slog.NewJSONHandler(buf, nil) },
+	}
+	for name, newHandler := range handlers {
+		for _, payload := range []struct {
+			key   string
+			value any
+		}{
+			{"bare", tok},
+			{"struct", svc},
+			{"any", slog.Any("wrapped", tok)},
+		} {
+			buf := &bytes.Buffer{}
+			logger := slog.New(newHandler(buf))
+			logger.Info("test", payload.key, payload.value)
+			assert.NotContains(t, buf.String(), secret,
+				"slog %s handler must not leak Token via key %q (got %q)",
+				name, payload.key, buf.String())
+		}
+	}
 }
