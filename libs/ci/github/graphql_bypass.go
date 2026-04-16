@@ -103,12 +103,6 @@ type checkContext struct {
 	Status     string `json:"status"`
 }
 
-// IsStatusContext returns true if this context came from the older commit
-// statuses API (has a non-empty Context field).
-func (c checkContext) IsStatusContext() bool {
-	return c.Context != ""
-}
-
 // DisplayName returns the identifying name regardless of type.
 func (c checkContext) DisplayName() string {
 	if c.Context != "" {
@@ -124,7 +118,7 @@ func (c checkContext) DisplayName() string {
 // non-digger/apply failure that hadn't yet concluded must not let the
 // bypass fire.
 func (c checkContext) IsPassing() bool {
-	if c.IsStatusContext() {
+	if c.Context != "" {
 		return c.State == "SUCCESS"
 	}
 	return c.Conclusion == "SUCCESS" || c.Conclusion == "NEUTRAL" || c.Conclusion == "SKIPPED"
