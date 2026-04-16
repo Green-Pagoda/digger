@@ -381,7 +381,6 @@ func run(command string, job orchestrator.Job, policyChecker policy.Checker, org
 			return nil, msg, fmt.Errorf("%s", msg)
 		}
 
-		// this might go into some sort of "appliability" plugin later
 		// Bypass the chicken-and-egg where the apply check itself blocks the
 		// PR. The check-name policy lives in apply_requirements; the CI
 		// provider only reports raw mergeability state. See #1180.
