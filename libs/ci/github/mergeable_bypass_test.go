@@ -349,55 +349,53 @@ func TestBypass_BlockedWithNoChecksAtAll_ReturnsFalse(t *testing.T) {
 			"is caused by non-check requirements")
 }
 
-// TestBypass_TruncatedStatuses_ReturnsError verifies that the bypass refuses
-// to fire when the combined status response is truncated (more statuses exist
-// than were returned) and surfaces the truncation as an actionable error.
-// This prevents silently missing a failing non-digger check that fell beyond
-// the first page, and tells operators the real cause rather than the generic
-// "ensure all checks pass" message.
-func TestBypass_TruncatedStatuses_ReturnsError(t *testing.T) {
-	pr := makePR("blocked", false)
+// TestBypass_Truncation_ReturnsError verifies that the bypass refuses to
+// fire when the GraphQL response indicates the check rollup was truncated,
+// and surfaces the truncation as an actionable error rather than reporting
+// a generic "ensure checks pass" message. Covers both the status-only and
+// status-plus-checkrun fixture shapes because each exercises a different
+// branch of the rollup-parsing code.
+func TestBypass_Truncation_ReturnsError(t *testing.T) {
 	statuses := []*gh.RepoStatus{
 		{Context: gh.String("digger/apply"), State: gh.String("pending")},
 	}
-	// Report totalCount=5 but only return 1 context — simulates pagination truncation
-	svc, server := newTestGithubService(t,
-		fakeGitHubAPIFull(t, pr, makeIssue(), statuses, nil, "", 5))
-	defer server.Close()
-
-	result, err := ci.IsMergeableForApply(svc, 1, []string{"digger/apply"})
-	assert.Error(t, err,
-		"truncation should surface as an error so the real cause reaches the operator")
-	assert.Contains(t, err.Error(), "truncated",
-		"error message should name truncation as the cause")
-	assert.False(t, result,
-		"should refuse to bypass when commit status results are truncated")
-}
-
-// TestBypass_TruncatedCheckRuns_ReturnsError verifies that the bypass refuses
-// to fire when the check runs response is truncated and surfaces the
-// truncation as an actionable error.
-func TestBypass_TruncatedCheckRuns_ReturnsError(t *testing.T) {
-	pr := makePR("blocked", false)
-	statuses := []*gh.RepoStatus{
-		{Context: gh.String("digger/apply"), State: gh.String("pending")},
+	cases := []struct {
+		name       string
+		statuses   []*gh.RepoStatus
+		checkRuns  []*gh.CheckRun
+		totalCount int
+	}{
+		{
+			name:       "statuses only",
+			statuses:   statuses,
+			checkRuns:  nil,
+			totalCount: 5,
+		},
+		{
+			name:     "statuses and check runs",
+			statuses: statuses,
+			checkRuns: []*gh.CheckRun{
+				{Name: gh.String("ci/build"), Status: gh.String("completed"), Conclusion: gh.String("success")},
+			},
+			totalCount: 151,
+		},
 	}
-	checkRuns := []*gh.CheckRun{
-		{Name: gh.String("ci/build"), Status: gh.String("completed"), Conclusion: gh.String("success")},
-	}
-	// Return 2 context nodes but report totalCount=151 — simulates truncation
-	// when both statuses and check runs spill past a single page.
-	svc, server := newTestGithubService(t,
-		fakeGitHubAPIFull(t, pr, makeIssue(), statuses, checkRuns, "", 151))
-	defer server.Close()
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			pr := makePR("blocked", false)
+			svc, server := newTestGithubService(t,
+				fakeGitHubAPIFull(t, pr, makeIssue(), c.statuses, c.checkRuns, "", c.totalCount))
+			defer server.Close()
 
-	result, err := ci.IsMergeableForApply(svc, 1, []string{"digger/apply"})
-	assert.Error(t, err,
-		"truncation should surface as an error so the real cause reaches the operator")
-	assert.Contains(t, err.Error(), "truncated",
-		"error message should name truncation as the cause")
-	assert.False(t, result,
-		"should refuse to bypass when check run results are truncated")
+			result, err := ci.IsMergeableForApply(svc, 1, []string{"digger/apply"})
+			assert.Error(t, err,
+				"truncation should surface as an error so the real cause reaches the operator")
+			assert.Contains(t, err.Error(), "truncated",
+				"error message should name truncation as the cause")
+			assert.False(t, result,
+				"should refuse to bypass when the check rollup is truncated")
+		})
+	}
 }
 
 // TestBypass_ReviewDecisionAllowlist verifies that only APPROVED and the
