@@ -725,7 +725,7 @@ func (svc GithubService) IsMergeable(prNumber int) (bool, error) {
 func (svc GithubService) InspectMergeability(prNumber int) (MergeabilityState, error) {
 	isPullRequest, err := svc.IsPullRequest(prNumber)
 	if err != nil {
-		return MergeabilityState{}, fmt.Errorf("could not get pull request type: %v", err)
+		return MergeabilityState{}, fmt.Errorf("could not get pull request type: %w", err)
 	}
 	if !isPullRequest {
 		// Issues are always "mergeable" (closable) for this workflow's purposes.
@@ -735,7 +735,7 @@ func (svc GithubService) InspectMergeability(prNumber int) (MergeabilityState, e
 	// Fetch the PR once and use that single snapshot for all decisions.
 	pr, _, err := svc.Client.PullRequests.Get(context.Background(), svc.Owner, svc.RepoName, prNumber)
 	if err != nil {
-		return MergeabilityState{}, fmt.Errorf("error getting pull request: %v", err)
+		return MergeabilityState{}, fmt.Errorf("error getting pull request: %w", err)
 	}
 
 	if pr.GetMergeable() && isMergeableState(pr.GetMergeableState()) {
@@ -763,7 +763,7 @@ func (svc GithubService) InspectMergeability(prNumber int) (MergeabilityState, e
 		svc.Client.BaseURL.String(), svc.Token,
 		svc.Owner, svc.RepoName, prNumber)
 	if err != nil {
-		return MergeabilityState{}, fmt.Errorf("error querying GraphQL for mergeability inspection: %v", err)
+		return MergeabilityState{}, fmt.Errorf("error querying GraphQL for mergeability inspection: %w", err)
 	}
 
 	// ReviewDecision allowlist: treat any non-APPROVED, non-empty value as

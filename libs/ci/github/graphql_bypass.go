@@ -194,25 +194,25 @@ func queryBypassGraphQL(ctx context.Context, client *http.Client, restBaseURL, t
 	}
 	body, err := json.Marshal(reqBody)
 	if err != nil {
-		return nil, fmt.Errorf("error marshaling GraphQL request: %v", err)
+		return nil, fmt.Errorf("error marshaling GraphQL request: %w", err)
 	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
-		return nil, fmt.Errorf("error creating GraphQL request: %v", err)
+		return nil, fmt.Errorf("error creating GraphQL request: %w", err)
 	}
 	req.Header.Set("Authorization", "bearer "+token)
 	req.Header.Set("Content-Type", "application/json")
 
 	resp, err := client.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("error executing GraphQL request: %v", err)
+		return nil, fmt.Errorf("error executing GraphQL request: %w", err)
 	}
 	defer resp.Body.Close()
 
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return nil, fmt.Errorf("error reading GraphQL response: %v", err)
+		return nil, fmt.Errorf("error reading GraphQL response: %w", err)
 	}
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("GraphQL request failed with status %d: %s",
@@ -221,7 +221,7 @@ func queryBypassGraphQL(ctx context.Context, client *http.Client, restBaseURL, t
 
 	var gqlResp graphqlResponse
 	if err := json.Unmarshal(respBody, &gqlResp); err != nil {
-		return nil, fmt.Errorf("error unmarshaling GraphQL response: %v", err)
+		return nil, fmt.Errorf("error unmarshaling GraphQL response: %w", err)
 	}
 	if len(gqlResp.Errors) > 0 {
 		// GitHub GraphQL routinely returns multiple errors (one per failed
@@ -249,7 +249,7 @@ func queryBypassGraphQL(ctx context.Context, client *http.Client, restBaseURL, t
 	for _, raw := range rollup.Nodes {
 		var cc checkContext
 		if err := json.Unmarshal(raw, &cc); err != nil {
-			return nil, fmt.Errorf("error unmarshaling check context: %v", err)
+			return nil, fmt.Errorf("error unmarshaling check context: %w", err)
 		}
 		result.Contexts = append(result.Contexts, cc)
 	}
