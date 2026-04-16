@@ -1,8 +1,6 @@
 package ci
 
-import (
-	"strconv"
-)
+import "strconv"
 
 type PullRequestService interface {
 	GetChangedFiles(prNumber int) ([]string, error)
