@@ -772,10 +772,8 @@ func (svc GithubService) InspectMergeability(prNumber int) (ci.MergeabilityState
 	// hidden failing check would let the bypass fire unsafely.
 	if result.TotalCount > len(result.Contexts) {
 		return ci.MergeabilityState{
-			Blocked:       true,
-			Truncated:     true,
-			FetchedChecks: len(result.Contexts),
-			TotalChecks:   result.TotalCount,
+			Blocked:   true,
+			Truncated: true,
 		}, nil
 	}
 

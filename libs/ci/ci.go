@@ -63,14 +63,6 @@ type MergeabilityState struct {
 	// Callers that rely on FailingChecks being exhaustive must treat a
 	// truncated state as "cannot determine" rather than "no failures".
 	Truncated bool
-
-	// TotalChecks is the number of checks the inspector knows about in
-	// total. When Truncated is true, len(FailingChecks) < TotalChecks.
-	TotalChecks int
-
-	// FetchedChecks is the number of checks the inspector actually saw.
-	// When Truncated is true, this is the subset that was enumerable.
-	FetchedChecks int
 }
 
 // BlockedMergeInspector is an optional capability for providers that can
@@ -117,9 +109,7 @@ func IsMergeableForApply(svc PullRequestService, prNumber int, selfBlockingCheck
 		// We cannot prove the only blocker is a self-blocking check when we
 		// cannot see the full list. Surface the real cause to the caller
 		// rather than falsely reporting "not mergeable, ensure checks pass".
-		return false, fmt.Errorf(
-			"cannot determine mergeability: status check list truncated (%d of %d fetched)",
-			state.FetchedChecks, state.TotalChecks)
+		return false, fmt.Errorf("cannot determine mergeability: status check list was truncated by upstream API")
 	}
 
 	selfBlocking := make(map[string]bool, len(selfBlockingChecks))
