@@ -64,8 +64,19 @@ func fakeGitHubAPIFull(t *testing.T, pr *gh.PullRequest, issue *gh.Issue, status
 }
 
 // buildGraphQLResponse constructs a canned GraphQL response matching the
-// bypassQuery shape from the same test data used for REST endpoints.
+// bypassQuery shape from the same test data used for REST endpoints. The
+// reported totalCount equals the number of emitted nodes — use
+// buildGraphQLResponseWithTotalCount to simulate pagination truncation.
 func buildGraphQLResponse(statuses []*gh.RepoStatus, checkRuns []*gh.CheckRun, reviewDecision string) map[string]any {
+	return buildGraphQLResponseWithTotalCount(statuses, checkRuns, reviewDecision, -1)
+}
+
+// buildGraphQLResponseWithTotalCount is like buildGraphQLResponse but lets
+// tests override the reported totalCount on the contexts connection. A
+// totalCount greater than len(nodes) simulates a truncated (paginated)
+// response where GitHub reported more contexts than it returned. Pass -1
+// to auto-use len(nodes) (i.e. no truncation).
+func buildGraphQLResponseWithTotalCount(statuses []*gh.RepoStatus, checkRuns []*gh.CheckRun, reviewDecision string, totalCount int) map[string]any {
 	// Build context nodes from statuses and check runs
 	var nodes []map[string]string
 	for _, s := range statuses {
@@ -92,6 +103,11 @@ func buildGraphQLResponse(statuses []*gh.RepoStatus, checkRuns []*gh.CheckRun, r
 		rd = reviewDecision
 	}
 
+	reportedTotal := totalCount
+	if reportedTotal < 0 {
+		reportedTotal = len(nodes)
+	}
+
 	return map[string]any{
 		"data": map[string]any{
 			"repository": map[string]any{
@@ -103,7 +119,7 @@ func buildGraphQLResponse(statuses []*gh.RepoStatus, checkRuns []*gh.CheckRun, r
 								"commit": map[string]any{
 									"statusCheckRollup": map[string]any{
 										"contexts": map[string]any{
-											"totalCount": len(nodes),
+											"totalCount": reportedTotal,
 											"nodes":      nodes,
 										},
 									},
@@ -350,18 +366,7 @@ func fakeGitHubAPIWithTotals(t *testing.T, pr *gh.PullRequest, issue *gh.Issue, 
 
 		switch {
 		case r.Method == "POST" && r.URL.Path == "/graphql":
-			resp := buildGraphQLResponse(statuses, checkRuns, "")
-			// Reach into the canned response to override totalCount, simulating
-			// a page where GitHub reported more contexts than it returned.
-			data := resp["data"].(map[string]any)
-			repo := data["repository"].(map[string]any)
-			prData := repo["pullRequest"].(map[string]any)
-			commits := prData["commits"].(map[string]any)
-			nodes := commits["nodes"].([]map[string]any)
-			commit := nodes[0]["commit"].(map[string]any)
-			rollup := commit["statusCheckRollup"].(map[string]any)
-			contexts := rollup["contexts"].(map[string]any)
-			contexts["totalCount"] = graphQLTotal
+			resp := buildGraphQLResponseWithTotalCount(statuses, checkRuns, "", graphQLTotal)
 			json.NewEncoder(w).Encode(resp)
 
 		case r.Method == "GET" && r.URL.Path == "/repos/testowner/testrepo/issues/1":
