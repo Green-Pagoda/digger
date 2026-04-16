@@ -8,7 +8,20 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"time"
 )
+
+// bypassHTTPTimeout bounds every GraphQL bypass call end-to-end. The whole
+// feature exists to unblock apply; a hung GitHub endpoint with no deadline
+// would wedge it indefinitely, which is strictly worse than the chicken-and-egg
+// this code is fixing. Applied both as a Client.Timeout (covers connection,
+// TLS handshake, headers, body) and as a context deadline (covers in-flight
+// cancellation).
+const bypassHTTPTimeout = 30 * time.Second
+
+// bypassHTTPClient is a dedicated client so we do not share state with
+// http.DefaultClient (which has no timeout and can be mutated elsewhere).
+var bypassHTTPClient = &http.Client{Timeout: bypassHTTPTimeout}
 
 // bypassQuery is the GraphQL query used by IsMergeableForApply to fetch review
 // decision and status check rollup in a single call. This replaces two REST
@@ -151,14 +164,17 @@ func queryBypassGraphQL(ctx context.Context, restBaseURL, token, owner, repo str
 		return nil, fmt.Errorf("error marshaling GraphQL request: %v", err)
 	}
 
-	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(body))
+	ctx, cancel := context.WithTimeout(ctx, bypassHTTPTimeout)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
 		return nil, fmt.Errorf("error creating GraphQL request: %v", err)
 	}
 	req.Header.Set("Authorization", "bearer "+token)
 	req.Header.Set("Content-Type", "application/json")
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := bypassHTTPClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("error executing GraphQL request: %v", err)
 	}

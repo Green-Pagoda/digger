@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/diggerhq/digger/libs/ci"
 	gh "github.com/google/go-github/v61/github"
@@ -477,6 +478,43 @@ func TestIsMergeableForApply_FallsBackForNonGithub(t *testing.T) {
 	result, err := ci.IsMergeableForApply(&mock, 1)
 	assert.NoError(t, err)
 	assert.True(t, result, "should fall back to IsMergeable for non-GitHub providers")
+}
+
+// TestBypass_GraphQLTimeout_ReturnsError verifies that a hung GitHub endpoint
+// is bounded by bypassHTTPClient's timeout rather than wedging apply forever.
+// The feature exists to unblock apply; a missing timeout would be strictly
+// worse than the chicken-and-egg it is fixing.
+func TestBypass_GraphQLTimeout_ReturnsError(t *testing.T) {
+	pr := makePR("blocked", false)
+	// Handler that blocks past the test's timeout on the GraphQL endpoint but
+	// answers other endpoints normally so we reach the timeout-prone code path.
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/graphql":
+			time.Sleep(500 * time.Millisecond)
+			// Response after sleep is irrelevant — client will have cancelled.
+			w.WriteHeader(http.StatusOK)
+		case r.URL.Path == "/repos/testowner/testrepo/issues/1":
+			json.NewEncoder(w).Encode(makeIssue())
+		case r.URL.Path == "/repos/testowner/testrepo/pulls/1":
+			json.NewEncoder(w).Encode(pr)
+		default:
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+		}
+	})
+	svc, server := newTestGithubService(t, handler)
+	defer server.Close()
+
+	// Swap in a short-timeout client for this test, restore after.
+	original := bypassHTTPClient
+	bypassHTTPClient = &http.Client{Timeout: 50 * time.Millisecond}
+	defer func() { bypassHTTPClient = original }()
+
+	result, err := svc.IsMergeableForApply(1)
+	assert.Error(t, err, "expected timeout error from slow GraphQL endpoint")
+	assert.False(t, result)
 }
 
 // TestIsMergeableForApply_BypassRunsForValueTypedGithubService verifies that
