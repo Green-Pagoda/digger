@@ -8,7 +8,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/diggerhq/digger/libs/ci"
 	gh "github.com/google/go-github/v61/github"
 	"github.com/stretchr/testify/assert"
 )
@@ -30,8 +29,8 @@ func newTestGithubService(t *testing.T, handler http.Handler) (GithubService, *h
 }
 
 // fakeGitHubAPI builds an http.Handler that serves the minimal subset of
-// endpoints the bypass logic calls: the GraphQL endpoint, Issues.Get (used by
-// IsPullRequest), and PullRequests.Get.
+// endpoints InspectMergeability calls: the GraphQL endpoint, Issues.Get (used
+// by IsPullRequest), and PullRequests.Get.
 func fakeGitHubAPI(t *testing.T, pr *gh.PullRequest, issue *gh.Issue, statuses []*gh.RepoStatus, checkRuns []*gh.CheckRun) http.Handler {
 	return fakeGitHubAPIFull(t, pr, issue, statuses, checkRuns, "", -1)
 }
@@ -54,7 +53,7 @@ func fakeGitHubAPIFull(t *testing.T, pr *gh.PullRequest, issue *gh.Issue, status
 		case r.Method == "GET" && r.URL.Path == "/repos/testowner/testrepo/issues/1":
 			json.NewEncoder(w).Encode(issue)
 
-		// IsMergeable and IsMergeableForApply call PullRequests.Get
+		// InspectMergeability calls PullRequests.Get
 		case r.Method == "GET" && r.URL.Path == "/repos/testowner/testrepo/pulls/1":
 			json.NewEncoder(w).Encode(pr)
 
@@ -190,172 +189,19 @@ func makeIssue() *gh.Issue {
 	}
 }
 
-func TestBypass_CleanPR_ReturnsTrue(t *testing.T) {
-	pr := makePR("clean", true)
-	svc, server := newTestGithubService(t,
-		fakeGitHubAPI(t, pr, makeIssue(), nil, nil))
-	defer server.Close()
+// These tests exercise InspectMergeability directly — the GitHub-specific
+// capability that reports raw mergeability state. Policy tests for the
+// IsMergeableForApply wrapper (which decides whether to bypass based on
+// FailingChecks, ReviewsBlocking, Truncated, etc.) live in
+// libs/apply_requirements/mergeable_for_apply_test.go alongside the function
+// they test.
 
-	result, err := IsMergeableForApply(svc, 1, []string{"digger/apply"})
-	assert.NoError(t, err)
-	assert.True(t, result, "clean PR should be mergeable")
-}
-
-func TestBypass_BlockedOnlyByDiggerApply_ReturnsTrue(t *testing.T) {
-	pr := makePR("blocked", false)
-	statuses := []*gh.RepoStatus{
-		{Context: gh.String("digger/apply"), State: gh.String("pending")},
-		{Context: gh.String("digger/plan"), State: gh.String("success")},
-	}
-	checkRuns := []*gh.CheckRun{
-		{Name: gh.String("ci/build"), Status: gh.String("completed"), Conclusion: gh.String("success")},
-	}
-	svc, server := newTestGithubService(t,
-		fakeGitHubAPI(t, pr, makeIssue(), statuses, checkRuns))
-	defer server.Close()
-
-	result, err := IsMergeableForApply(svc, 1, []string{"digger/apply"})
-	assert.NoError(t, err)
-	assert.True(t, result, "should bypass when digger/apply is the only blocker")
-}
-
-// TestBypass_BlockedOnlyByDiggerApplyCheckRun_ReturnsTrue mirrors
-// TestBypass_BlockedOnlyByDiggerApply_ReturnsTrue but posts digger/apply as
-// a CheckRun rather than a commit status. GitHub's newer checks API is
-// increasingly the preferred reporting mechanism, and this case hits a
-// different branch of checkContext.IsPassing (Conclusion vs State), so
-// coverage for the feature's primary check name in CheckRun form prevents
-// a silent behavior gap if the backend ever switches form.
-func TestBypass_BlockedOnlyByDiggerApplyCheckRun_ReturnsTrue(t *testing.T) {
-	pr := makePR("blocked", false)
-	statuses := []*gh.RepoStatus{
-		{Context: gh.String("digger/plan"), State: gh.String("success")},
-	}
-	checkRuns := []*gh.CheckRun{
-		{Name: gh.String("digger/apply"), Status: gh.String("in_progress")},
-		{Name: gh.String("ci/build"), Status: gh.String("completed"), Conclusion: gh.String("success")},
-	}
-	svc, server := newTestGithubService(t,
-		fakeGitHubAPI(t, pr, makeIssue(), statuses, checkRuns))
-	defer server.Close()
-
-	result, err := IsMergeableForApply(svc, 1, []string{"digger/apply"})
-	assert.NoError(t, err)
-	assert.True(t, result, "should bypass when digger/apply CheckRun is the only blocker")
-}
-
-func TestBypass_BlockedByOtherStatus_ReturnsFalse(t *testing.T) {
-	pr := makePR("blocked", false)
-	statuses := []*gh.RepoStatus{
-		{Context: gh.String("digger/apply"), State: gh.String("pending")},
-		{Context: gh.String("ci/lint"), State: gh.String("failure")},
-	}
-	svc, server := newTestGithubService(t,
-		fakeGitHubAPI(t, pr, makeIssue(), statuses, nil))
-	defer server.Close()
-
-	result, err := IsMergeableForApply(svc, 1, []string{"digger/apply"})
-	assert.NoError(t, err)
-	assert.False(t, result, "should not bypass when another status is failing")
-}
-
-func TestBypass_BlockedByOtherCheckRun_ReturnsFalse(t *testing.T) {
-	pr := makePR("blocked", false)
-	statuses := []*gh.RepoStatus{
-		{Context: gh.String("digger/apply"), State: gh.String("pending")},
-	}
-	checkRuns := []*gh.CheckRun{
-		{Name: gh.String("ci/build"), Status: gh.String("completed"), Conclusion: gh.String("failure")},
-	}
-	svc, server := newTestGithubService(t,
-		fakeGitHubAPI(t, pr, makeIssue(), statuses, checkRuns))
-	defer server.Close()
-
-	result, err := IsMergeableForApply(svc, 1, []string{"digger/apply"})
-	assert.NoError(t, err)
-	assert.False(t, result, "should not bypass when a check run is failing")
-}
-
-func TestBypass_DirtyState_ReturnsFalse(t *testing.T) {
-	pr := makePR("dirty", false)
-	svc, server := newTestGithubService(t,
-		fakeGitHubAPI(t, pr, makeIssue(), nil, nil))
-	defer server.Close()
-
-	result, err := IsMergeableForApply(svc, 1, []string{"digger/apply"})
-	assert.NoError(t, err)
-	assert.False(t, result, "dirty state (merge conflicts) should not be bypassed")
-}
-
-// TestBypass_BlockedByNonCheckReason_NoDiggerApply_ReturnsFalse covers the
-// case where a PR is "blocked" due to a non-status-check reason (e.g. missing
-// required reviews, unresolved conversations, unsigned commits) and no
-// digger/apply check is present at all. All other checks are passing.
-// The bypass must NOT fire — digger/apply isn't causing the block.
-func TestBypass_BlockedByNonCheckReason_NoDiggerApply_ReturnsFalse(t *testing.T) {
-	pr := makePR("blocked", false)
-	statuses := []*gh.RepoStatus{
-		{Context: gh.String("ci/build"), State: gh.String("success")},
-		{Context: gh.String("ci/lint"), State: gh.String("success")},
-	}
-	checkRuns := []*gh.CheckRun{
-		{Name: gh.String("ci/test"), Status: gh.String("completed"), Conclusion: gh.String("success")},
-	}
-	svc, server := newTestGithubService(t,
-		fakeGitHubAPI(t, pr, makeIssue(), statuses, checkRuns))
-	defer server.Close()
-
-	result, err := IsMergeableForApply(svc, 1, []string{"digger/apply"})
-	assert.NoError(t, err)
-	assert.False(t, result,
-		"should not bypass when blocked for non-check reasons (e.g. missing reviews) "+
-			"and digger/apply is not even present")
-}
-
-// TestBypass_BlockedByNonCheckReason_DiggerApplyAlreadyPassed_ReturnsFalse
-// covers the case where digger/apply has already succeeded but the PR is still
-// "blocked" — meaning something else (reviews, signatures, etc.) is blocking.
-func TestBypass_BlockedByNonCheckReason_DiggerApplyAlreadyPassed_ReturnsFalse(t *testing.T) {
-	pr := makePR("blocked", false)
-	statuses := []*gh.RepoStatus{
-		{Context: gh.String("digger/apply"), State: gh.String("success")},
-		{Context: gh.String("digger/plan"), State: gh.String("success")},
-	}
-	svc, server := newTestGithubService(t,
-		fakeGitHubAPI(t, pr, makeIssue(), statuses, nil))
-	defer server.Close()
-
-	result, err := IsMergeableForApply(svc, 1, []string{"digger/apply"})
-	assert.NoError(t, err)
-	assert.False(t, result,
-		"should not bypass when digger/apply already passed — the block "+
-			"must be caused by something else (reviews, signatures, etc.)")
-}
-
-// TestBypass_BlockedWithNoChecksAtAll_ReturnsFalse covers the case where a PR
-// is "blocked" but there are zero status checks and zero check runs. The block
-// must be entirely due to non-check branch protection (reviews, signatures,
-// linear history, etc.).
-func TestBypass_BlockedWithNoChecksAtAll_ReturnsFalse(t *testing.T) {
-	pr := makePR("blocked", false)
-	svc, server := newTestGithubService(t,
-		fakeGitHubAPI(t, pr, makeIssue(), nil, nil))
-	defer server.Close()
-
-	result, err := IsMergeableForApply(svc, 1, []string{"digger/apply"})
-	assert.NoError(t, err)
-	assert.False(t, result,
-		"should not bypass when there are no checks at all — the block "+
-			"is caused by non-check requirements")
-}
-
-// TestBypass_Truncation_ReturnsError verifies that the bypass refuses to
-// fire when the GraphQL response indicates the check rollup was truncated,
-// and surfaces the truncation as an actionable error rather than reporting
-// a generic "ensure checks pass" message. Covers both the status-only and
-// status-plus-checkrun fixture shapes because each exercises a different
-// branch of the rollup-parsing code.
-func TestBypass_Truncation_ReturnsError(t *testing.T) {
+// TestInspectMergeability_Truncation_ReportsTruncated verifies that when the
+// GraphQL response indicates the check rollup was truncated, the returned
+// MergeabilityState carries Truncated=true and Blocked=true — giving the
+// caller enough information to refuse bypass without conflating truncation
+// with "no failures".
+func TestInspectMergeability_Truncation_ReportsTruncated(t *testing.T) {
 	statuses := []*gh.RepoStatus{
 		{Context: gh.String("digger/apply"), State: gh.String("pending")},
 	}
@@ -387,32 +233,31 @@ func TestBypass_Truncation_ReturnsError(t *testing.T) {
 				fakeGitHubAPIFull(t, pr, makeIssue(), c.statuses, c.checkRuns, "", c.totalCount))
 			defer server.Close()
 
-			result, err := IsMergeableForApply(svc, 1, []string{"digger/apply"})
-			assert.Error(t, err,
-				"truncation should surface as an error so the real cause reaches the operator")
-			assert.Contains(t, err.Error(), "truncated",
-				"error message should name truncation as the cause")
-			assert.False(t, result,
-				"should refuse to bypass when the check rollup is truncated")
+			state, err := svc.InspectMergeability(1)
+			assert.NoError(t, err)
+			assert.True(t, state.Truncated,
+				"truncation must be signalled to the caller so it can refuse bypass")
+			assert.True(t, state.Blocked,
+				"Truncated is only meaningful when the PR is blocked")
+			assert.False(t, state.Mergeable)
 		})
 	}
 }
 
-// TestBypass_ReviewDecisionAllowlist verifies that only APPROVED and the
-// empty string (no review policy) allow the bypass to fire. Every other
-// value — including unknown future GitHub enum additions — must fail
-// closed. The check fixture is fixed (digger/apply pending + one passing
-// context) so the only variable is the review decision.
-func TestBypass_ReviewDecisionAllowlist(t *testing.T) {
+// TestInspectMergeability_ReviewDecisionAllowlist verifies that the
+// ReviewsBlocking flag is only clear when the review decision is APPROVED or
+// empty (no policy). Every other value — including unknown future GitHub enum
+// additions — must surface as blocking so the policy wrapper fails closed.
+func TestInspectMergeability_ReviewDecisionAllowlist(t *testing.T) {
 	cases := []struct {
-		decision string
-		want     bool
-		reason   string
+		decision            string
+		wantReviewsBlocking bool
+		reason              string
 	}{
-		{"REVIEW_REQUIRED", false, "reviews required — block is not from checks"},
-		{"CHANGES_REQUESTED", false, "changes requested"},
-		{"SOME_FUTURE_STATE", false, "unknown reviewDecision must fail closed (allowlist)"},
-		{"APPROVED", true, "reviews approved and digger/apply is the only blocker"},
+		{"REVIEW_REQUIRED", true, "reviews required — block is not from checks"},
+		{"CHANGES_REQUESTED", true, "changes requested"},
+		{"SOME_FUTURE_STATE", true, "unknown reviewDecision must fail closed (allowlist)"},
+		{"APPROVED", false, "reviews approved — ReviewsBlocking should be false"},
 	}
 	for _, c := range cases {
 		t.Run(c.decision, func(t *testing.T) {
@@ -425,18 +270,19 @@ func TestBypass_ReviewDecisionAllowlist(t *testing.T) {
 				fakeGitHubAPIFull(t, pr, makeIssue(), statuses, nil, c.decision, -1))
 			defer server.Close()
 
-			result, err := IsMergeableForApply(svc, 1, []string{"digger/apply"})
+			state, err := svc.InspectMergeability(1)
 			assert.NoError(t, err)
-			assert.Equal(t, c.want, result, c.reason)
+			assert.Equal(t, c.wantReviewsBlocking, state.ReviewsBlocking, c.reason)
 		})
 	}
 }
 
-// TestBypass_EmptyToken_ReturnsError verifies that the bypass fails fast with
-// a descriptive error when Token is not populated. This surfaces provisioning
-// bugs in call sites that construct GithubService without wiring the token,
-// rather than silently degrading to a path that cannot see reviewDecision.
-func TestBypass_EmptyToken_ReturnsError(t *testing.T) {
+// TestInspectMergeability_EmptyToken_ReturnsError verifies that
+// InspectMergeability fails fast with a descriptive error when Token is not
+// populated. This surfaces provisioning bugs in call sites that construct
+// GithubService without wiring the token, rather than silently degrading to a
+// path that cannot see reviewDecision.
+func TestInspectMergeability_EmptyToken_ReturnsError(t *testing.T) {
 	pr := makePR("blocked", false)
 	statuses := []*gh.RepoStatus{
 		{Context: gh.String("digger/apply"), State: gh.String("pending")},
@@ -450,25 +296,18 @@ func TestBypass_EmptyToken_ReturnsError(t *testing.T) {
 	client.BaseURL, _ = client.BaseURL.Parse(server.URL + "/")
 	svc := GithubService{Client: client, Owner: "testowner", RepoName: "testrepo"}
 
-	result, err := IsMergeableForApply(svc, 1, []string{"digger/apply"})
+	state, err := svc.InspectMergeability(1)
 	assert.Error(t, err, "expected fail-fast error when Token is empty")
-	assert.False(t, result)
+	assert.Equal(t, MergeabilityState{}, state)
 	assert.Contains(t, err.Error(), "Token",
 		"error should name the missing field to aid diagnosis")
 }
 
-func TestIsMergeableForApply_FallsBackForNonGithub(t *testing.T) {
-	mock := MockCiService{CommentsPerPr: map[int][]*ci.Comment{}}
-	result, err := IsMergeableForApply(&mock, 1, []string{"digger/apply"})
-	assert.NoError(t, err)
-	assert.True(t, result, "should fall back to IsMergeable for non-GitHub providers")
-}
-
-// TestBypass_GraphQLMalformedJSON_ReturnsError verifies that an upstream
-// returning bytes that are not valid JSON (e.g. a gateway HTML page that
-// slipped past the status check, or a corrupted proxy response) surfaces an
-// error instead of silently treating the response as empty.
-func TestBypass_GraphQLMalformedJSON_ReturnsError(t *testing.T) {
+// TestInspectMergeability_GraphQLMalformedJSON_ReturnsError verifies that an
+// upstream returning bytes that are not valid JSON (e.g. a gateway HTML page
+// that slipped past the status check, or a corrupted proxy response) surfaces
+// an error instead of silently treating the response as empty.
+func TestInspectMergeability_GraphQLMalformedJSON_ReturnsError(t *testing.T) {
 	pr := makePR("blocked", false)
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
@@ -490,17 +329,18 @@ func TestBypass_GraphQLMalformedJSON_ReturnsError(t *testing.T) {
 	svc, server := newTestGithubService(t, handler)
 	defer server.Close()
 
-	result, err := IsMergeableForApply(svc, 1, []string{"digger/apply"})
+	state, err := svc.InspectMergeability(1)
 	assert.Error(t, err, "expected unmarshal error from malformed JSON")
-	assert.False(t, result)
+	assert.Equal(t, MergeabilityState{}, state)
 	assert.Contains(t, err.Error(), "unmarshal",
 		"error should identify the parse failure")
 }
 
-// TestBypass_NotAPullRequest_ReturnsMergeable verifies the IsPullRequest=false
-// path: an issue (not a PR) is "mergeable" for workflow purposes, since there
-// is nothing to block. Locks in InspectMergeability's contract for issues.
-func TestBypass_NotAPullRequest_ReturnsMergeable(t *testing.T) {
+// TestInspectMergeability_NotAPullRequest_ReturnsMergeable verifies the
+// IsPullRequest=false path: an issue (not a PR) is "mergeable" for workflow
+// purposes, since there is nothing to block. Locks in the capability's
+// contract for issues.
+func TestInspectMergeability_NotAPullRequest_ReturnsMergeable(t *testing.T) {
 	// An Issue without PullRequestLinks is the "not a PR" case.
 	bareIssue := &gh.Issue{}
 	pr := makePR("blocked", false) // PR fixture used only if path falls through
@@ -520,16 +360,16 @@ func TestBypass_NotAPullRequest_ReturnsMergeable(t *testing.T) {
 	svc, server := newTestGithubService(t, handler)
 	defer server.Close()
 
-	result, err := IsMergeableForApply(svc, 1, []string{"digger/apply"})
+	state, err := svc.InspectMergeability(1)
 	assert.NoError(t, err)
-	assert.True(t, result, "issues should be treated as mergeable (closable)")
+	assert.True(t, state.Mergeable, "issues should be treated as mergeable (closable)")
 }
 
-// TestBypass_GraphQLMultipleErrors_AllSurfaced verifies that when the GraphQL
-// response carries multiple errors (one per failed field path, mixed
-// auth/rate-limit/deprecation signals), every message is included in the
-// wrapped error rather than only the first.
-func TestBypass_GraphQLMultipleErrors_AllSurfaced(t *testing.T) {
+// TestInspectMergeability_GraphQLMultipleErrors_AllSurfaced verifies that
+// when the GraphQL response carries multiple errors (one per failed field
+// path, mixed auth/rate-limit/deprecation signals), every message is included
+// in the wrapped error rather than only the first.
+func TestInspectMergeability_GraphQLMultipleErrors_AllSurfaced(t *testing.T) {
 	pr := makePR("blocked", false)
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -555,19 +395,19 @@ func TestBypass_GraphQLMultipleErrors_AllSurfaced(t *testing.T) {
 	svc, server := newTestGithubService(t, handler)
 	defer server.Close()
 
-	result, err := IsMergeableForApply(svc, 1, []string{"digger/apply"})
+	state, err := svc.InspectMergeability(1)
 	assert.Error(t, err)
-	assert.False(t, result)
+	assert.Equal(t, MergeabilityState{}, state)
 	assert.Contains(t, err.Error(), "rate limit exceeded")
 	assert.Contains(t, err.Error(), "deprecated")
 	assert.Contains(t, err.Error(), "permission denied",
 		"all GraphQL errors must be surfaced, not just the first")
 }
 
-// TestBypass_GraphQLNon200_TruncatesErrorBody verifies that a large upstream
-// error page (as GHE edge proxies can return) is capped in the wrapped error
-// rather than propagated verbatim through logs and Sentry.
-func TestBypass_GraphQLNon200_TruncatesErrorBody(t *testing.T) {
+// TestInspectMergeability_GraphQLNon200_TruncatesErrorBody verifies that a
+// large upstream error page (as GHE edge proxies can return) is capped in the
+// wrapped error rather than propagated verbatim through logs and Sentry.
+func TestInspectMergeability_GraphQLNon200_TruncatesErrorBody(t *testing.T) {
 	pr := makePR("blocked", false)
 	hugeBody := make([]byte, 4096)
 	for i := range hugeBody {
@@ -593,9 +433,9 @@ func TestBypass_GraphQLNon200_TruncatesErrorBody(t *testing.T) {
 	svc, server := newTestGithubService(t, handler)
 	defer server.Close()
 
-	result, err := IsMergeableForApply(svc, 1, []string{"digger/apply"})
+	state, err := svc.InspectMergeability(1)
 	assert.Error(t, err)
-	assert.False(t, result)
+	assert.Equal(t, MergeabilityState{}, state)
 	assert.Contains(t, err.Error(), "502", "error should name the status code")
 	assert.Contains(t, err.Error(), "[truncated]",
 		"error should signal that the body was truncated")
@@ -604,11 +444,10 @@ func TestBypass_GraphQLNon200_TruncatesErrorBody(t *testing.T) {
 		"truncated error message should not carry the full 4KB body")
 }
 
-// TestBypass_GraphQLTimeout_ReturnsError verifies that a hung GitHub endpoint
-// is bounded by the injected HTTPClient's timeout rather than wedging apply
-// forever. The feature exists to unblock apply; a missing timeout would be
-// strictly worse than the chicken-and-egg it is fixing.
-func TestBypass_GraphQLTimeout_ReturnsError(t *testing.T) {
+// TestInspectMergeability_GraphQLTimeout_ReturnsError verifies that a hung
+// GitHub endpoint is bounded by the injected HTTPClient's timeout rather than
+// wedging the caller forever.
+func TestInspectMergeability_GraphQLTimeout_ReturnsError(t *testing.T) {
 	pr := makePR("blocked", false)
 	// Handler that blocks past the test's timeout on the GraphQL endpoint but
 	// answers other endpoints normally so we reach the timeout-prone code path.
@@ -635,32 +474,7 @@ func TestBypass_GraphQLTimeout_ReturnsError(t *testing.T) {
 	// to race on if this test is ever run in parallel with others.
 	svc.HTTPClient = &http.Client{Timeout: 50 * time.Millisecond}
 
-	result, err := IsMergeableForApply(svc, 1, []string{"digger/apply"})
+	state, err := svc.InspectMergeability(1)
 	assert.Error(t, err, "expected timeout error from slow GraphQL endpoint")
-	assert.False(t, result)
-}
-
-// TestIsMergeableForApply_BypassRunsForValueTypedGithubService verifies that
-// the BlockedMergeInspector capability interface is satisfied when a
-// GithubService value (not pointer) is boxed into ci.PullRequestService.
-// This mirrors the spec-driven CLI path (libs/spec/providers.go) where
-// GithubServiceProviderBasic.NewService returns a GithubService by value.
-func TestIsMergeableForApply_BypassRunsForValueTypedGithubService(t *testing.T) {
-	pr := makePR("blocked", false)
-	statuses := []*gh.RepoStatus{
-		{Context: gh.String("digger/apply"), State: gh.String("pending")},
-		{Context: gh.String("digger/plan"), State: gh.String("success")},
-	}
-	svc, server := newTestGithubService(t,
-		fakeGitHubAPI(t, pr, makeIssue(), statuses, nil))
-	defer server.Close()
-
-	// Box the GithubService VALUE (not &svc) into the interface.
-	var iface ci.PullRequestService = svc
-
-	result, err := IsMergeableForApply(iface, 1, []string{"digger/apply"})
-	assert.NoError(t, err)
-	assert.True(t, result,
-		"digger/apply bypass must run when GithubService is stored in "+
-			"ci.PullRequestService as a value, not only as a pointer")
+	assert.Equal(t, MergeabilityState{}, state)
 }

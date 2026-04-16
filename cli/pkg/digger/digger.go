@@ -13,7 +13,6 @@ import (
 	"github.com/diggerhq/digger/libs/apply_requirements"
 	"github.com/diggerhq/digger/libs/backendapi"
 	"github.com/diggerhq/digger/libs/ci"
-	digger_github "github.com/diggerhq/digger/libs/ci/github"
 	comment_updater "github.com/diggerhq/digger/libs/comment_utils/summary"
 	"github.com/diggerhq/digger/libs/execution"
 	locking2 "github.com/diggerhq/digger/libs/locking"
@@ -385,7 +384,7 @@ func run(command string, job orchestrator.Job, policyChecker policy.Checker, org
 		// Bypass the chicken-and-egg where the apply check itself blocks the
 		// PR. The check-name policy lives in apply_requirements; the CI
 		// provider only reports raw mergeability state.
-		isMergeable, err := digger_github.IsMergeableForApply(prService, *job.PullRequestNumber, apply_requirements.SelfBlockingApplyChecks())
+		isMergeable, err := apply_requirements.IsMergeableForApply(prService, *job.PullRequestNumber, apply_requirements.SelfBlockingApplyChecks())
 		if err != nil {
 			msg := fmt.Sprintf("Failed to check if PR is mergeable. %v", err)
 			return nil, msg, fmt.Errorf("%s", msg)
