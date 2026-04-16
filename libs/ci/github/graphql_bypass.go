@@ -14,9 +14,9 @@ import (
 // bypassHTTPTimeout bounds every GraphQL bypass call end-to-end. The whole
 // feature exists to unblock apply; a hung GitHub endpoint with no deadline
 // would wedge it indefinitely, which is strictly worse than the chicken-and-egg
-// this code is fixing. Applied both as a Client.Timeout (covers connection,
-// TLS handshake, headers, body) and as a context deadline (covers in-flight
-// cancellation).
+// this code is fixing. Applied as the HTTP client's Timeout (covers
+// connection, TLS handshake, headers, body). Callers' ctx handles upstream
+// cancellation.
 const bypassHTTPTimeout = 30 * time.Second
 
 // defaultBypassHTTPClient is used when GithubService.HTTPClient is nil. It is
@@ -190,9 +190,6 @@ func queryBypassGraphQL(ctx context.Context, client *http.Client, restBaseURL, t
 	if err != nil {
 		return nil, fmt.Errorf("error marshaling GraphQL request: %v", err)
 	}
-
-	ctx, cancel := context.WithTimeout(ctx, bypassHTTPTimeout)
-	defer cancel()
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
