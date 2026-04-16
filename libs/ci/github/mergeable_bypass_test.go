@@ -268,6 +268,32 @@ func TestInspectMergeability_Truncation_ReportsTruncated(t *testing.T) {
 	}
 }
 
+// TestInspectMergeability_TruncatedAndReviewsRequired verifies that when the
+// check rollup is truncated AND the PR also has a non-APPROVED ReviewDecision,
+// both flags are surfaced on the returned state. Regression guard: the
+// truncation branch previously hardcoded ReviewsBlocking=false, which was a
+// correctness lie about the state — even though the call chain happened to
+// refuse bypass for other reasons.
+func TestInspectMergeability_TruncatedAndReviewsRequired(t *testing.T) {
+	pr := makePR("blocked", false)
+	statuses := []*gh.RepoStatus{
+		{Context: gh.String("digger/apply"), State: gh.String("pending")},
+	}
+	svc, server := newTestGithubService(t,
+		fakeGitHubAPIFull(t, pr, makeIssue(), statuses, nil, "REVIEW_REQUIRED", 42))
+	defer server.Close()
+
+	state, err := svc.InspectMergeability(1)
+	assert.NoError(t, err)
+	assert.True(t, state.Blocked, "PR is blocked")
+	assert.True(t, state.Truncated, "upstream response was truncated")
+	assert.True(t, state.ReviewsBlocking,
+		"REVIEW_REQUIRED must surface as ReviewsBlocking=true even when truncated")
+	assert.False(t, state.Mergeable)
+	assert.Nil(t, state.FailingChecks,
+		"FailingChecks must be nil on the truncated branch (list is incomplete)")
+}
+
 // TestInspectMergeability_ReviewDecisionAllowlist verifies that the
 // ReviewsBlocking flag is only clear when the review decision is APPROVED or
 // empty (no policy). Every other value — including unknown future GitHub enum
