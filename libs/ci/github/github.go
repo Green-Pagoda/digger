@@ -721,7 +721,7 @@ func (svc GithubService) IsMergeable(prNumber int) (bool, error) {
 // check is bypassable — that policy lives in the consuming package
 // (apply_requirements).
 //
-// Satisfies ci.BlockedMergeInspector.
+// Satisfies BlockedMergeInspector.
 func (svc GithubService) InspectMergeability(prNumber int) (MergeabilityState, error) {
 	isPullRequest, err := svc.IsPullRequest(prNumber)
 	if err != nil {
