@@ -20,8 +20,6 @@ import (
 // here we only verify that the wrapper turns a given state into the correct
 // bypass decision.
 func TestIsMergeableForApply(t *testing.T) {
-	selfBlocking := []string{"digger/apply"}
-
 	cases := []struct {
 		name       string
 		state      digger_github.MergeabilityState
@@ -109,7 +107,7 @@ func TestIsMergeableForApply(t *testing.T) {
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			svc := &bypassFakeService{inspectResult: c.state}
-			got, err := IsMergeableForApply(svc, 1, selfBlocking)
+			got, err := IsMergeableForApply(svc, 1)
 			if c.wantErr {
 				assert.Error(t, err, c.reason)
 				if c.errContain != "" {
@@ -127,7 +125,7 @@ func TestIsMergeableForApply(t *testing.T) {
 // from InspectMergeability is propagated to the caller rather than swallowed.
 func TestIsMergeableForApply_InspectorErrorIsSurfaced(t *testing.T) {
 	svc := &bypassFakeService{inspectErr: fmt.Errorf("upstream API boom")}
-	got, err := IsMergeableForApply(svc, 1, []string{"digger/apply"})
+	got, err := IsMergeableForApply(svc, 1)
 	assert.Error(t, err)
 	assert.ErrorContains(t, err, "upstream API boom",
 		"underlying error must reach the caller so operators see the cause")
@@ -140,7 +138,7 @@ func TestIsMergeableForApply_InspectorErrorIsSurfaced(t *testing.T) {
 // GitHub-specific, so other providers are unaffected.
 func TestIsMergeableForApply_FallsBackForNonGithub(t *testing.T) {
 	mock := digger_github.MockCiService{CommentsPerPr: map[int][]*ci.Comment{}}
-	result, err := IsMergeableForApply(&mock, 1, []string{"digger/apply"})
+	result, err := IsMergeableForApply(&mock, 1)
 	assert.NoError(t, err)
 	assert.True(t, result, "should fall back to IsMergeable for non-GitHub providers")
 }
@@ -171,7 +169,7 @@ func TestIsMergeableForApply_BypassRunsForValueTypedGithubService(t *testing.T) 
 	// Box the GithubService VALUE (not &svc) into the interface.
 	var iface ci.PullRequestService = svc
 
-	result, err := IsMergeableForApply(iface, 1, []string{"digger/apply"})
+	result, err := IsMergeableForApply(iface, 1)
 	assert.NoError(t, err)
 	assert.True(t, result,
 		"digger/apply bypass must run when GithubService is stored in "+
