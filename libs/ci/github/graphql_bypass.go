@@ -26,14 +26,8 @@ const bypassHTTPTimeout = 30 * time.Second
 // without racing on a shared global.
 var defaultBypassHTTPClient = &http.Client{Timeout: bypassHTTPTimeout}
 
-// bypassContextsPageSize is the number of status-check rollup contexts we
-// request in a single GraphQL call. When the PR has more than this many
-// required checks, GitHub returns only the first page and the truncation
-// guard in InspectMergeability (TotalCount > len(Contexts)) surfaces the
-// condition as an error rather than letting the bypass fire on an
-// incomplete view. Repos with >100 required checks on a single PR are rare
-// in practice; if that ever changes, raising this is preferable to
-// introducing cursor-based pagination for a per-apply read path.
+// GitHub caps statusCheckRollup.contexts at 100 per page. We request one
+// page; overflow sets MergeabilityState.Truncated.
 const bypassContextsPageSize = 100
 
 // bypassQuery is the GraphQL query used by InspectMergeability to fetch
@@ -176,7 +170,7 @@ func truncateForError(body []byte) string {
 // httptest servers it appends /graphql to the existing base.
 func graphqlBaseURL(restBaseURL string) string {
 	restBaseURL = strings.TrimSuffix(restBaseURL, "/")
-	if strings.HasSuffix(restBaseURL, "api.github.com") {
+	if restBaseURL == "https://api.github.com" {
 		return "https://api.github.com/graphql"
 	}
 	// GHE: https://hostname/api/v3 → https://hostname/api/graphql
