@@ -96,7 +96,11 @@ type graphqlResponse struct {
 }
 
 // checkContext is a unified representation of either a StatusContext or a
-// CheckRun from the GraphQL statusCheckRollup union type.
+// CheckRun from the GraphQL statusCheckRollup union type. The GraphQL API
+// guarantees exactly one arm is populated per node: a non-empty Context
+// marks the value as a StatusContext (State is meaningful); an empty
+// Context marks it as a CheckRun (Name, Conclusion, and Status are
+// meaningful). DisplayName and IsPassing both rely on this discriminator.
 type checkContext struct {
 	// StatusContext fields
 	Context string `json:"context"`
