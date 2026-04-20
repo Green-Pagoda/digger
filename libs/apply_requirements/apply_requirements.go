@@ -5,7 +5,7 @@ import (
 	"log/slog"
 
 	"github.com/diggerhq/digger/libs/ci"
-	"github.com/diggerhq/digger/libs/ci/github"
+	dgh "github.com/diggerhq/digger/libs/ci/github"
 	"github.com/diggerhq/digger/libs/digger_config"
 	"github.com/diggerhq/digger/libs/scheduler"
 )
@@ -27,7 +27,7 @@ func CheckApplyRequirements(ghService ci.PullRequestService, impactedProjects []
 	// The bypass policy (self-blocking check name, truncation handling,
 	// review-decision guard) lives with the provider in libs/ci/github;
 	// here we just consume the boolean verdict.
-	isMergeable, err := github.IsMergeable(ghService, prNumber)
+	isMergeable, err := dgh.IsMergeable(ghService, prNumber)
 	if err != nil {
 		slog.Error("Error checking if PR is mergeable", "prNumber", prNumber, "error", err)
 		return fmt.Errorf("error checking if PR is mergeable: %w", err)
