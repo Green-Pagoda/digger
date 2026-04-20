@@ -32,6 +32,16 @@ func newTestGithubService(t *testing.T, handler http.Handler) (GithubService, *h
 	}, server
 }
 
+// writeJSON encodes v as JSON onto w and fails the test on encode errors.
+// Swallowing the error would mask fixture bugs as confusing empty-body or
+// partial-response failures at the assertion layer.
+func writeJSON(t *testing.T, w http.ResponseWriter, v any) {
+	t.Helper()
+	if err := json.NewEncoder(w).Encode(v); err != nil {
+		t.Errorf("failed to encode response: %v", err)
+	}
+}
+
 // fakeGitHubAPI builds an http.Handler that serves the minimal subset of
 // endpoints InspectMergeability calls: the GraphQL endpoint, Issues.Get (used
 // by IsPullRequest), and PullRequests.Get.
@@ -51,15 +61,15 @@ func fakeGitHubAPIFull(t *testing.T, pr *gh.PullRequest, issue *gh.Issue, status
 		switch {
 		case r.Method == "POST" && r.URL.Path == "/graphql":
 			resp := buildGraphQLResponse(statuses, checkRuns, reviewDecision, graphQLTotal)
-			json.NewEncoder(w).Encode(resp)
+			writeJSON(t, w, resp)
 
 		// IsPullRequest calls Issues.Get
 		case r.Method == "GET" && r.URL.Path == "/repos/testowner/testrepo/issues/1":
-			json.NewEncoder(w).Encode(issue)
+			writeJSON(t, w, issue)
 
 		// InspectMergeability calls PullRequests.Get
 		case r.Method == "GET" && r.URL.Path == "/repos/testowner/testrepo/pulls/1":
-			json.NewEncoder(w).Encode(pr)
+			writeJSON(t, w, pr)
 
 		default:
 			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
@@ -81,10 +91,10 @@ func newGraphQLOverrideHandler(t *testing.T, pr *gh.PullRequest, issue *gh.Issue
 			graphqlHandler(w, r)
 		case r.URL.Path == "/repos/testowner/testrepo/issues/1":
 			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(issue)
+			writeJSON(t, w, issue)
 		case r.URL.Path == "/repos/testowner/testrepo/pulls/1":
 			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(pr)
+			writeJSON(t, w, pr)
 		default:
 			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
 			w.WriteHeader(http.StatusNotFound)
@@ -390,10 +400,10 @@ func TestInspectMergeability_NotAPullRequest_ReturnsMergeable(t *testing.T) {
 		w.Header().Set("Content-Type", "application/json")
 		switch {
 		case r.URL.Path == "/repos/testowner/testrepo/issues/1":
-			json.NewEncoder(w).Encode(bareIssue)
+			writeJSON(t, w, bareIssue)
 		case r.URL.Path == "/repos/testowner/testrepo/pulls/1":
 			t.Errorf("PullRequests.Get should not be called for an issue")
-			json.NewEncoder(w).Encode(pr)
+			writeJSON(t, w, pr)
 		default:
 			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
 			w.WriteHeader(http.StatusNotFound)
@@ -416,7 +426,7 @@ func TestInspectMergeability_GraphQLMultipleErrors_AllSurfaced(t *testing.T) {
 	handler := newGraphQLOverrideHandler(t, pr, makeIssue(),
 		func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(map[string]any{
+			writeJSON(t, w, map[string]any{
 				"data": nil,
 				"errors": []map[string]any{
 					{"message": "rate limit exceeded"},
