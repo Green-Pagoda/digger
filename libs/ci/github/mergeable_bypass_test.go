@@ -564,6 +564,61 @@ func TestInspectMergeability_FailingChecks_IdentifiesDiggerApply(t *testing.T) {
 	}
 }
 
+// TestInspectMergeability_NilStatusCheckRollup verifies the end-to-end path
+// where a blocked PR's latest commit has no statusCheckRollup at all (GitHub
+// returns JSON null for the rollup field — legitimately happens when no
+// checks have started reporting yet, or when the PR is blocked by
+// non-check protections like required signatures).
+//
+// Under this shape, InspectMergeability must report Blocked=true with
+// FailingChecks=nil, and the IsMergeable policy wrapper must refuse bypass
+// via the len(state.FailingChecks) > 0 guard at bypass.go:104 — a zero-
+// length list proves no self-blocker was observed, so the block must come
+// from something we cannot resolve.
+func TestInspectMergeability_NilStatusCheckRollup(t *testing.T) {
+	pr := makePR("blocked", false)
+	handler := newGraphQLOverrideHandler(t, pr, makeIssue(),
+		func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			writeJSON(t, w, map[string]any{
+				"data": map[string]any{
+					"repository": map[string]any{
+						"pullRequest": map[string]any{
+							"reviewDecision": nil,
+							"commits": map[string]any{
+								"nodes": []map[string]any{
+									{
+										"commit": map[string]any{
+											"statusCheckRollup": nil,
+										},
+									},
+								},
+							},
+						},
+					},
+				},
+			})
+		})
+	svc, server := newTestGithubService(t, handler)
+	defer server.Close()
+
+	state, err := svc.InspectMergeability(1)
+	assert.NoError(t, err)
+	assert.True(t, state.Blocked,
+		"blocked PR state must be surfaced even when rollup is nil")
+	assert.Nil(t, state.FailingChecks,
+		"nil rollup carries no checks; FailingChecks must be nil so the policy wrapper refuses bypass")
+	assert.False(t, state.Mergeable)
+
+	// Exercise the IsMergeable policy-wrapper guard: with no enumerable
+	// failures, bypass must be refused — the block is from something other
+	// than a self-blocking check.
+	ok, err := IsMergeable(svc, 1)
+	assert.NoError(t, err)
+	assert.False(t, ok,
+		"IsMergeable must refuse bypass when FailingChecks is empty (block cannot be attributed to digger/apply)")
+}
+
 // TestInspectMergeability_FailingChecks_MixedBlockers verifies that when a
 // non-self-blocking check is failing alongside digger/apply, both names
 // surface in FailingChecks. The policy wrapper's job is then to refuse
