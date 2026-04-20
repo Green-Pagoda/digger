@@ -23,13 +23,13 @@ func (f *bypassFakeInspector) InspectMergeability(prNumber int) (MergeabilitySta
 	return f.inspectResult, f.inspectErr
 }
 
-// TestIsMergeableForApply exercises the policy wrapper as a pure function of
+// TestIsMergeable exercises the policy wrapper as a pure function of
 // the MergeabilityState a BlockedMergeInspector would return. HTTP-level
 // behavior (GraphQL errors, truncation detection, review-decision parsing) is
 // covered in mergeable_bypass_test.go where InspectMergeability is tested
 // directly; here we only verify that the wrapper turns a given state into the
 // correct bypass decision.
-func TestIsMergeableForApply(t *testing.T) {
+func TestIsMergeable(t *testing.T) {
 	cases := []struct {
 		name       string
 		state      MergeabilityState
@@ -117,7 +117,7 @@ func TestIsMergeableForApply(t *testing.T) {
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			svc := &bypassFakeInspector{inspectResult: c.state}
-			got, err := IsMergeableForApply(svc, 1)
+			got, err := IsMergeable(svc, 1)
 			if c.wantErr {
 				assert.Error(t, err, c.reason)
 				if c.errContain != "" {
@@ -131,36 +131,36 @@ func TestIsMergeableForApply(t *testing.T) {
 	}
 }
 
-// TestIsMergeableForApply_InspectorErrorIsSurfaced verifies that an error
+// TestIsMergeable_InspectorErrorIsSurfaced verifies that an error
 // from InspectMergeability is propagated to the caller rather than swallowed.
-func TestIsMergeableForApply_InspectorErrorIsSurfaced(t *testing.T) {
+func TestIsMergeable_InspectorErrorIsSurfaced(t *testing.T) {
 	svc := &bypassFakeInspector{inspectErr: fmt.Errorf("upstream API boom")}
-	got, err := IsMergeableForApply(svc, 1)
+	got, err := IsMergeable(svc, 1)
 	assert.Error(t, err)
 	assert.ErrorContains(t, err, "upstream API boom",
 		"underlying error must reach the caller so operators see the cause")
 	assert.False(t, got)
 }
 
-// TestIsMergeableForApply_FallsBackForNonGithub verifies that providers
+// TestIsMergeable_FallsBackForNonGithub verifies that providers
 // without the BlockedMergeInspector capability (GitLab, Bitbucket, Azure)
 // fall back to plain IsMergeable. The chicken-and-egg this code resolves is
 // GitHub-specific, so other providers are unaffected.
-func TestIsMergeableForApply_FallsBackForNonGithub(t *testing.T) {
+func TestIsMergeable_FallsBackForNonGithub(t *testing.T) {
 	mock := MockCiService{CommentsPerPr: map[int][]*ci.Comment{}}
-	result, err := IsMergeableForApply(&mock, 1)
+	result, err := IsMergeable(&mock, 1)
 	assert.NoError(t, err)
 	assert.True(t, result, "should fall back to IsMergeable for non-GitHub providers")
 }
 
-// TestIsMergeableForApply_BypassRunsForValueTypedGithubService verifies that
+// TestIsMergeable_BypassRunsForValueTypedGithubService verifies that
 // the BlockedMergeInspector capability interface is satisfied when a
 // GithubService VALUE (not pointer) is boxed into ci.PullRequestService.
 // This mirrors the spec-driven CLI path (libs/spec/providers.go) where
 // GithubServiceProviderBasic.NewService returns a GithubService by value.
 // A prior regression assumed pointer boxing and silently skipped the bypass
 // on the CLI path — this test locks in dispatch for both forms.
-func TestIsMergeableForApply_BypassRunsForValueTypedGithubService(t *testing.T) {
+func TestIsMergeable_RunsForValueTypedGithubService(t *testing.T) {
 	pr := makePR("blocked", false)
 	statuses := []*gh.RepoStatus{
 		{Context: gh.String("digger/apply"), State: gh.String("pending")},
@@ -173,7 +173,7 @@ func TestIsMergeableForApply_BypassRunsForValueTypedGithubService(t *testing.T) 
 	// Box the GithubService VALUE (not &svc) into the interface.
 	var iface ci.PullRequestService = svc
 
-	result, err := IsMergeableForApply(iface, 1)
+	result, err := IsMergeable(iface, 1)
 	assert.NoError(t, err)
 	assert.True(t, result,
 		"digger/apply bypass must run when GithubService is stored in "+

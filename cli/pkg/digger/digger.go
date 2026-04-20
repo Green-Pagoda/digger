@@ -384,7 +384,7 @@ func run(command string, job orchestrator.Job, policyChecker policy.Checker, org
 		// Bypass the chicken-and-egg where the apply check itself blocks the
 		// PR. The bypass policy lives with the provider in libs/ci/github;
 		// we just consume the boolean verdict.
-		isMergeable, err := github.IsMergeableForApply(prService, *job.PullRequestNumber)
+		isMergeable, err := github.IsMergeable(prService, *job.PullRequestNumber)
 		if err != nil {
 			msg := fmt.Sprintf("Failed to check if PR is mergeable. %v", err)
 			return nil, msg, fmt.Errorf("%s", msg)

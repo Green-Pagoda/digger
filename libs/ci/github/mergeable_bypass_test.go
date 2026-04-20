@@ -215,10 +215,9 @@ func makeIssue() *gh.Issue {
 
 // These tests exercise InspectMergeability directly — the GitHub-specific
 // capability that reports raw mergeability state. Policy tests for the
-// IsMergeableForApply wrapper (which decides whether to bypass based on
-// FailingChecks, ReviewsBlocking, Truncated, etc.) live in
-// libs/apply_requirements/mergeable_for_apply_test.go alongside the function
-// they test.
+// IsMergeable wrapper (which decides whether to accept a blocked-only-by-
+// digger/apply state based on FailingChecks, ReviewsBlocking, Truncated,
+// etc.) live in mergeable_test.go alongside the function they test.
 
 // TestInspectMergeability_Truncation_ReportsTruncated verifies that when the
 // GraphQL response indicates the check rollup was truncated, the returned

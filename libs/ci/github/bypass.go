@@ -54,12 +54,17 @@ type BlockedMergeInspector interface {
 // the bypass.
 const diggerApplyCheck = "digger/apply"
 
-// IsMergeableForApply returns true when the PR is mergeable, OR when the only
-// failing check is digger/apply itself — breaking the chicken-and-egg where
-// the apply check is configured as a required status check on its own PR.
-// Falls back to standard IsMergeable for providers without the
+// IsMergeable reports whether a PR is mergeable, correctly interpreting the
+// self-referential digger/apply check. The platform marks a PR "blocked"
+// when digger/apply (a required status check) hasn't passed — but
+// digger/apply only turns green AFTER apply runs, so its red state is
+// expected, not a real blocker. When it's the sole failing check, this
+// function reports true; the platform's own IsMergeable cannot, because
+// it doesn't know digger/apply is self-referential.
+//
+// Falls back to the platform's plain IsMergeable for providers without the
 // BlockedMergeInspector capability.
-func IsMergeableForApply(svc ci.PullRequestService, prNumber int) (bool, error) {
+func IsMergeable(svc ci.PullRequestService, prNumber int) (bool, error) {
 	inspector, ok := svc.(BlockedMergeInspector)
 	if !ok {
 		// Non-GitHub providers (GitLab, Bitbucket, Azure) do not implement
