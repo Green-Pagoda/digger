@@ -19,7 +19,11 @@ func newTestGithubService(t *testing.T, handler http.Handler) (GithubService, *h
 	t.Helper()
 	server := httptest.NewServer(handler)
 	client := gh.NewClient(nil)
-	client.BaseURL, _ = client.BaseURL.Parse(server.URL + "/")
+	base, err := client.BaseURL.Parse(server.URL + "/")
+	if err != nil {
+		t.Fatalf("failed to parse test server URL: %v", err)
+	}
+	client.BaseURL = base
 	return GithubService{
 		Client:   client,
 		Owner:    "testowner",
