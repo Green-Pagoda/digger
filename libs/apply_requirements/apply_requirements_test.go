@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"testing"
 
-	digger_github "github.com/diggerhq/digger/libs/ci/github"
+	"github.com/diggerhq/digger/libs/ci/github"
 	"github.com/diggerhq/digger/libs/digger_config"
 	"github.com/diggerhq/digger/libs/scheduler"
 	"github.com/stretchr/testify/assert"
@@ -18,13 +18,13 @@ import (
 // CheckApplyRequirements actually exercises.
 //
 // By implementing InspectMergeability, this type satisfies the
-// digger_github.BlockedMergeInspector capability — which is how the bypass
+// github.BlockedMergeInspector capability — which is how the bypass
 // logic decides whether to consult us instead of falling back to IsMergeable.
 type bypassFakeService struct {
-	digger_github.MockCiService
+	github.MockCiService
 
 	// inspectResult / inspectErr are what InspectMergeability returns.
-	inspectResult digger_github.MergeabilityState
+	inspectResult github.MergeabilityState
 	inspectErr    error
 
 	// approvals is what GetApprovals returns.
@@ -34,7 +34,7 @@ type bypassFakeService struct {
 	diverged bool
 }
 
-func (f *bypassFakeService) InspectMergeability(prNumber int) (digger_github.MergeabilityState, error) {
+func (f *bypassFakeService) InspectMergeability(prNumber int) (github.MergeabilityState, error) {
 	return f.inspectResult, f.inspectErr
 }
 
@@ -56,7 +56,7 @@ func mergeableProject() digger_config.Project {
 
 func TestCheckApplyRequirements_MergeableShortCircuitsToApproval(t *testing.T) {
 	svc := &bypassFakeService{
-		inspectResult: digger_github.MergeabilityState{Mergeable: true},
+		inspectResult: github.MergeabilityState{Mergeable: true},
 		approvals:     []string{"reviewer"},
 	}
 	err := CheckApplyRequirements(svc, []digger_config.Project{mergeableProject()}, nil, 1, "feat", "main")
@@ -66,7 +66,7 @@ func TestCheckApplyRequirements_MergeableShortCircuitsToApproval(t *testing.T) {
 
 func TestCheckApplyRequirements_BypassFiresWhenOnlyBlockerIsDiggerApply(t *testing.T) {
 	svc := &bypassFakeService{
-		inspectResult: digger_github.MergeabilityState{
+		inspectResult: github.MergeabilityState{
 			Blocked:       true,
 			FailingChecks: []string{"digger/apply"},
 		},
@@ -80,7 +80,7 @@ func TestCheckApplyRequirements_BypassFiresWhenOnlyBlockerIsDiggerApply(t *testi
 
 func TestCheckApplyRequirements_BlockedByOtherCheckFailsMergeability(t *testing.T) {
 	svc := &bypassFakeService{
-		inspectResult: digger_github.MergeabilityState{
+		inspectResult: github.MergeabilityState{
 			Blocked:       true,
 			FailingChecks: []string{"digger/apply", "ci/build"},
 		},
@@ -97,7 +97,7 @@ func TestCheckApplyRequirements_SkipMergeCheckBypassesMergeabilityRequirement(t 
 	// Inspector reports a genuine block with non-digger/apply failures;
 	// SkipMergeCheck on the job should let the apply proceed anyway.
 	svc := &bypassFakeService{
-		inspectResult: digger_github.MergeabilityState{
+		inspectResult: github.MergeabilityState{
 			Blocked:       true,
 			FailingChecks: []string{"ci/build"},
 		},
