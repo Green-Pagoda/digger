@@ -93,15 +93,13 @@ func IsMergeable(svc ci.PullRequestService, prNumber int) (bool, error) {
 		return false, fmt.Errorf("cannot determine mergeability: status check list was truncated by upstream API")
 	}
 
-	foundSelfBlocker := false
 	for _, name := range state.FailingChecks {
 		if name != diggerApplyCheck {
 			return false, nil
 		}
-		foundSelfBlocker = true
 	}
 	// Refuse to bypass when no self-blocker was actually present — the block
 	// must be caused by something we cannot resolve (signed commits,
 	// unresolved conversations, etc.).
-	return foundSelfBlocker, nil
+	return len(state.FailingChecks) > 0, nil
 }
