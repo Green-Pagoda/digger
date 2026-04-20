@@ -10,6 +10,12 @@ import (
 // MergeabilityState describes a PR's mergeability with enough detail for
 // workflows to decide whether they can resolve the block themselves. Returned
 // by BlockedMergeInspector.InspectMergeability.
+//
+// Field validity is conditional: Mergeable=true short-circuits the state —
+// the other fields carry no meaning. ReviewsBlocking, FailingChecks, and
+// Truncated are only meaningful when Blocked=true; when Blocked=false (and
+// Mergeable=false), the PR is in a non-resolvable state (dirty, behind,
+// unknown) and those fields are zero values.
 type MergeabilityState struct {
 	// Mergeable is true when the PR is already mergeable by the platform's
 	// normal rules. Workflows can short-circuit on this without inspecting
