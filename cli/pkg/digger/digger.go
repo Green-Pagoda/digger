@@ -864,7 +864,7 @@ func MergePullRequest(ciService ci.PullRequestService, prNumber int, mergeStrate
 			log.Fatalf("PR is not mergeable. Status: %v", combinedStatus)
 		}
 
-		prIsMergeable, err := ciService.IsMergeable(prNumber)
+		prIsMergeable, err := dgh.IsMergeable(ciService, prNumber)
 
 		if err != nil {
 			log.Fatalf("failed to check if PR is mergeable, %v", err)
