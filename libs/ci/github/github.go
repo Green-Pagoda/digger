@@ -718,8 +718,8 @@ func (svc GithubService) IsMergeable(prNumber int) (bool, error) {
 // InspectMergeability returns a structured MergeabilityState describing
 // why a PR is or is not mergeable, with enough detail for callers to apply
 // workflow-specific bypass policies. It does NOT decide whether any specific
-// check is bypassable — that policy lives in the consuming package
-// (apply_requirements).
+// check is bypassable — that policy lives in IsMergeable in this
+// package (bypass.go).
 //
 // Satisfies BlockedMergeInspector.
 func (svc GithubService) InspectMergeability(prNumber int) (MergeabilityState, error) {
