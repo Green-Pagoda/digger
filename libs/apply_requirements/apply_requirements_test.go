@@ -120,6 +120,41 @@ func TestCheckApplyRequirements_InspectMergeabilityErrorIsSurfaced(t *testing.T)
 		"the underlying error must be wrapped, not swallowed, so operators can see the cause")
 }
 
+// TestCheckApplyRequirements_MultipleProjects_FirstFailureWins verifies the
+// per-project iteration in CheckApplyRequirements short-circuits on the first
+// failing project and names that project in the error. When operators see the
+// error in a log, they need to know which project tripped the gate — not just
+// that "some project" failed.
+//
+// Fixture: two projects with the mergeable requirement. The first project
+// has skip_merge_check=true on its job (so the mergeable check is ignored
+// for it and it passes), the second has no such job (so the failing
+// isMergeable verdict blocks it). The error must reference the second
+// project's name, proving the loop reached it and stopped there.
+func TestCheckApplyRequirements_MultipleProjects_FirstFailureWins(t *testing.T) {
+	svc := &bypassFakeService{
+		inspectResult: dgh.MergeabilityState{
+			Blocked:       true,
+			FailingChecks: []string{"ci/build"},
+		},
+		approvals: []string{"reviewer"},
+	}
+	projects := []digger_config.Project{
+		{Name: "proj-first", ApplyRequirements: []string{digger_config.ApplyRequirementsMergeable}},
+		{Name: "proj-second", ApplyRequirements: []string{digger_config.ApplyRequirementsMergeable}},
+	}
+	// Only proj-first has skip_merge_check — proj-second falls into the
+	// genuine "not mergeable" branch.
+	jobs := []scheduler.Job{{ProjectName: "proj-first", SkipMergeCheck: true}}
+
+	err := CheckApplyRequirements(svc, projects, jobs, 1, "feat", "main")
+	assert.Error(t, err, "the second project's failing mergeability must surface")
+	assert.Contains(t, err.Error(), "proj-second",
+		"error must name the failing project so operators know which one tripped the gate")
+	assert.NotContains(t, err.Error(), "proj-first",
+		"first project passed; its name should not appear in the error")
+}
+
 func TestIgnoreMergeabilityForProject(t *testing.T) {
 	proj := digger_config.Project{Name: "proj"}
 	t.Run("skip_merge_check true", func(t *testing.T) {
